@@ -1,7 +1,18 @@
+# optimization tools
 import cvxpy as cp
+
+# working with data
 import numpy as np
 import pandas as pd
 import geopandas as gpd
+import pickle
+import configparser
+
+# tracking
+import wandb
+
+# files
+import os
 
 def prepare_optimization_data(huc8_df, solar_proportion_df, wind_proportion_df,
                             demand_profile, data_center_cost=6e5):
@@ -85,40 +96,6 @@ def prepare_optimization_data(huc8_df, solar_proportion_df, wind_proportion_df,
     E_s = footprint_ordered['Solar Carbon Footprint [tons CO2-eq/MWh]'].values  # Solar emissions [tons CO2-eq/MWh]
     E_w = footprint_ordered['Wind Carbon Footprint [tons CO2-eq/MWh]'].values  # Wind emissions [tons CO2-eq/MWh]
 
-    # C_s = np.zeros((L, T))
-    # C_w = np.zeros((L, T))
-
-    # # detect HUC8 column for solar 
-    # solar_huc8_col = None
-    # for col in ['HUC8', 'huc8', 'HUC_8', 'HUC8_str']:
-    #     if col in solar_proportion_df.columns:
-    #         solar_huc8_col = col
-    #         break
-
-    # # detect HUC8 column for wind
-    # wind_huc8_col = None
-    # for col in ['HUC8', 'huc8', 'HUC_8', 'HUC8_str']:
-    #     if col in wind_proportion_df.columns:
-    #         wind_huc8_col = col
-    #         break
-
-    # for i, huc8 in enumerate(huc8_order):
-    #     # find the corresponding data for each HUC8 column
-    #     if solar_huc8_col and huc8 in solar_proportion_df[solar_huc8_col].values:
-    #         solar_row = solar_proportion_df[solar_proportion_df[solar_huc8_col] == huc8].iloc[0, 1:].values
-    #         if len(solar_row) >= T: # truncate time series if longer than time duration
-    #             C_s[i, :] = solar_row[:T]
-    #         else: # repeat the time series enough times to fill the time duration
-    #             repeats = T // len(solar_row) + 1
-    #             C_s[i, :] = np.tile(solar_row, repeats)[:T]
-
-    #     if wind_huc8_col and huc8 in wind_proportion_df[wind_huc8_col].values:
-    #         wind_row = wind_proportion_df[wind_proportion_df[wind_huc8_col] == huc8].iloc[0, 1:].values
-    #         if len(wind_row) >= T:
-    #             C_w[i, :] = wind_row[:T]
-    #         else:
-    #             repeats = T // len(wind_row) + 1
-    #             C_w[i, :] = np.tile(wind_row, repeats)[:T]
 
     # read solar and wind proportion data
     C_s = solar_proportion_df[huc8_order].values.T
@@ -192,17 +169,22 @@ def compute_composite_costs(data, alpha, beta, gamma):
 
     return M_g, M_s, M_w, sigma_S, sigma_P, sigma_E
 
-
-def make_problem(data, equity_type='max',grid_only=False):
-    """ 
-    Formulate the data center siting optimization problem.
+def optimize_data_center_siting(data, scenario_name, weights_dict, equity_type='max', verbose=True, grid_only=False):
+    """
+    Solve the data center siting optimization problem
 
     Parameters:
     -----------
     data : dict
         Dictionary containing all prepared data
+    scenario_name: string
+        Name of scenario being computed
+    weights_dict: dict
+        Dictionary of weights, where keys are weights names and values are dictionaries of (alpha, beta, gamma, delta) weights
     equity_type : str
         'max' for maximum water scarcity or 'mad' for mean absolute difference
+    verbose: boolean
+        True if we want to print updates as optimization is in progress.
     grid_only: boolean
         If True, only allow use of grid electricity
     """
@@ -282,141 +264,88 @@ def make_problem(data, equity_type='max',grid_only=False):
             constraints.append(s[l] == 0)
             constraints.append(w[l] == 0)
 
-    # Create problem
-    problem = cp.Problem(cp.Minimize(obj), constraints)
-
-    return problem
-
-def optimize_data_center_siting(data, alpha=1.0, beta=1.0, gamma=1.0, delta=1.0,
-                               equity_type='max', verbose=True, grid_only=False):
-    """
-    Solve the data center siting optimization problem
-
-    Parameters:
-    -----------
-    data : dict
-        Dictionary containing all prepared data
-    alpha : float
-        Weight for water stress
-    beta : float
-        Weight for monetary costs
-    gamma : float
-        Weight for emissions
-    delta : float
-        Weight for water stress inequity
-    equity_type : str
-        'max' for maximum water scarcity or 'mad' for mean absolute difference
-    verbose: boolean
-        True if we want to print updates as optimization is in progress.
-    grid_only: boolean
-        If True, only allow use of grid electricity
-    """
-
-    L, T = data['L'], data['T']
-
-    # Compute composite costs
-    M_g, M_s, M_w, sigma_S, sigma_P, sigma_E = compute_composite_costs(data, alpha, beta, gamma)
-
-    # Decision variables
-    x = cp.Variable((L, 1), nonneg=True)  # New DC capacity [MW]
-    a = cp.Variable((L, T), nonneg=True)  # DC demand allocation [MWh]
-    g = cp.Variable((L, T), nonneg=True)  # Grid power [MWh]
-    s = cp.Variable((L, 1), nonneg=True)  # Annual solar [MWh]
-    w = cp.Variable((L, 1), nonneg=True)  # Annual wind [MWh]
-
-    # Compute water scarcity vector S (equation 4)
-    S = (cp.diag(data['S_g']) @ cp.sum(g, axis=1, keepdims=True) +
-         cp.diag(data['S_s']) @ s +
-         cp.diag(data['S_w']) @ w +
-         cp.diag(data['S_dc']) @ cp.sum(a, axis=1, keepdims=True))
-    # ^ There was previously a "divide by T" on the grid and data center terms. I removed those to fit the optimization model we wrote in Overleaf. - Richard
-
-    print(f"S shape: {S.shape}")
-    # Water inequity term
-    if equity_type == 'max': # max water scarcity footprint
-        f_equity = cp.max(S)
-        equity_constraints = []
-        # f_equity = cp.Variable(nonneg=True)
-        # equity_constraints = [f_equity >= S]
-        # equity_constraints = [f_equity >= S[i] for i in range(L)]
-    else:  # mean absolute difference of water scarcity footprint
-        diff = cp.Variable((L, L), nonneg=True)
-        f_equity = cp.sum(diff) / (L * L)
-        equity_constraints = []
-        equity_constraints.append(diff >= S - S.T)
-        equity_constraints.append(diff >= S.T - S)
-
-        # for i in range(L):
-        #     for j in range(L):
-        #         equity_constraints.append(diff[i, j] >= S[i] - S[j])
-        #         equity_constraints.append(diff[i, j] >= S[j] - S[i])
-
-    # Objective function (equation 6)
-    obj = ((beta / sigma_P) * (data['P_dc'].T @ x) +
-           M_g.T @ cp.sum(g, axis=1) +
-           M_s.T @ s +
-           M_w.T @ w +
-           (alpha / sigma_S) * (data['S_dc'].T @ cp.sum(a, axis=1)) +
-           (delta / sigma_S) * f_equity)
-
-    # Constraints
-    constraints = []
-
-    # Meet demand (equation 7)
-    constraints.append(cp.sum(a, axis=0) >= data['D'])
-
-    # Power balance (equation 8)
-    constraints.append(g + cp.diag(s) @ data['C_s'] + cp.diag(w) @ data['C_w']  >= a)
-
-    # Capacity constraint (equation 9)
-
-    # constraints.append((x + data['Y']).reshape((data['Y'].shape[0], 1)) @ np.ones((1,T)) >= a)
-    constraints.append(x + data['Y'] >= a)
-
-    # Add equity constraints
-    constraints.extend(equity_constraints)
-
-    # Case with only grid electricity
-    if grid_only:
-        for l in range(L):
-            constraints.append(s[l] == 0)
-            constraints.append(w[l] == 0)
-
     # Create and solve problem
     problem = cp.Problem(cp.Minimize(obj), constraints)
-    problem.solve(solver=cp.GUROBI if 'GUROBI' in cp.installed_solvers() else cp.ECOS, verbose=verbose)
 
-    if problem.status not in ['optimal', 'optimal_inaccurate']:
-        print(f"Warning: Problem status is {problem.status}")
 
-    # Extract results
-    results = {
-        'x': x.value,  # New DC capacity
-        'a': a.value,  # Demand allocation
-        'g': g.value,  # Grid usage
-        's': s.value,  # Solar usage
-        'w': w.value,  # Wind usage
-        'S': S.value if hasattr(S, 'value') else None,  # Water scarcity by location
-        'f_equity': f_equity.value,
-        'objective': problem.value,
-        'status': problem.status
-    }
+    for _, params in weights_dict.items():
+        weights_name = params['weights_name']
+        alpha.value = params['alpha']
+        beta.value = params['beta']
+        gamma.value = params['gamma']
+        delta.value = params['delta']
 
-    return results
+        # update params
+        params['equity_type'] = equity_type
+        params['grid_only'] = grid_only
+        params['huc8_order'] = data['huc8_order']
 
-def analyze_results(results, data, huc8_df):
+        problem.solve(solver=cp.GUROBI if 'GUROBI' in cp.installed_solvers() else cp.ECOS, verbose=verbose)
+
+        if problem.status not in ['optimal', 'optimal_inaccurate']:
+            print(f"Warning: Problem status is {problem.status}")
+
+        # Extract results
+        results = {
+            'x': x.value,  # New DC capacity
+            'a': a.value,  # Demand allocation
+            'g': g.value,  # Grid usage
+            's': s.value,  # Solar usage
+            'w': w.value,  # Wind usage
+            'S': S.value if hasattr(S, 'value') else None,  # Water scarcity by location
+            'Water_Inequity': f_equity.value,
+            'Objective_Value': problem.value,
+            'status': problem.status,
+            'scenario_name': weights_name,
+        }
+
+        # add in the parameters
+        results.update(params)
+
+
+        # add insightful results
+        results_df, total_metrics = analyze_results(results, data)
+
+        print(f"Total New Capacity: {total_metrics['Total_New_Capacity_MW']:.1f} MW")
+        print(f"Renewable Energy: {total_metrics['Renewable_Percent']:.1f}%")
+        print(f"Water Inequity: {total_metrics['Water_Inequity']:.2f}")
+        print(f"Total Emissions: {total_metrics['Total_Emissions_tonsCO2']:.0f} tons CO2")
+        print(f"Total Water Scarcity: {total_metrics['Total_Water_Scarcity_m3eq']:.0f} m³-eq")
+
+
+        # log statistics in wandb
+        if wandb:            
+            wandb.init(project='DCSitingOptimization', name=f"{scenario_name}/{weights_name}", config=params)
+            wandb.log(total_metrics)
+
+
+        # Store results
+        # all_results[scenario['name']] = {
+        #     'results': results,
+        #     'results_df': results_df,
+        #     'metrics': metrics
+        # }
+
+        with open(f"Data/Models/{scenario_name}/{weights_name}_alpha_{params['alpha']}_beta_{params['beta']}_gamma_{params['gamma']}_delta_{params['delta']}.pkl", "wb") as f:
+            pickle.dump({'results': results,
+                       'results_df': results_df,
+                       'metrics': total_metrics}, f)
+
+
+    # return results
+
+def analyze_results(results, data):
     """
     Analyze and visualize optimization results
     """
-    L, T = data['L'], data['T']
 
     # Create results dataframe
     results_df = pd.DataFrame({
         'HUC8': data['huc8_order'],
-        'New_Capacity_MW': results['x'],
+        'New_Capacity_MW': results['x'].flatten(),
         'Total_Grid_MWh': np.sum(results['g'], axis=1),
-        'Solar_MWh': results['s'],
-        'Wind_MWh': results['w'],
+        'Solar_MWh': results['s'].flatten(),
+        'Wind_MWh': results['w'].flatten(),
         'Total_Demand_MWh': np.sum(results['a'], axis=1)
     })
 
@@ -437,29 +366,31 @@ def analyze_results(results, data, huc8_df):
     }
 
     # Calculate environmental impacts
-    total_emissions = (np.sum(np.sum(results['g'], axis=1) * data['E_g']) +
-                      np.sum(results['s'] * data['E_s']) +
-                      np.sum(results['w'] * data['E_w']))
-
-    total_water = (np.sum(np.sum(results['g'], axis=1) * data['S_g']) +
-                  np.sum(results['s'] * data['S_s']) +
-                  np.sum(results['w'] * data['S_w']) +
-                  np.sum(np.sum(results['a'], axis=1) * data['S_dc']))
-
+    total_emissions = (data['E_g'].T @ np.sum(results['g'], axis=1) +
+                       data['E_s'].T @ results['s'] +
+                       data['E_w'].T @ results['w'])[0]
+        
+    total_water = (data['S_g'].T @ np.sum(results['g'], axis=1) +
+                   data['S_s'].T @ results['s'] + 
+                   data['S_w'].T @ results['w'])[0]
+        
     total_metrics['Total_Emissions_tonsCO2'] = total_emissions
     total_metrics['Total_Water_Scarcity_m3eq'] = total_water
 
     # Renewable percentage
     total_energy_all = total_metrics['Total_Grid_MWh'] + total_metrics['Total_Solar_MWh'] + total_metrics['Total_Wind_MWh']
-    total_metrics['Renewable_Percent'] = 100 * (total_metrics['Total_Solar_MWh'] + total_metrics['Total_Wind_MWh']) / total_energy_all
+    total_metrics['Solar_Percent'] = 100 * total_metrics['Total_Solar_MWh'] / total_energy_all
+    total_metrics['Wind_Percent'] = 100 * total_metrics['Total_Wind_MWh'] / total_energy_all
+    total_metrics['Renewable_Percent'] = total_metrics['Solar_Percent'] + total_metrics['Wind_Percent']
 
     return results_df, total_metrics
 
-def run_optimization(huc8_df, solar_proportion_df, wind_proportion_df,
+def run_optimization_old(huc8_df, solar_proportion_df, wind_proportion_df,
                     demand_profile, scenario_name="Optimization Results"):
     """
     Run the complete optimization pipeline
     """
+
     print(f"\n{'='*50}")
     print(f"Running: {scenario_name}")
     print(f"{'='*50}")
@@ -508,6 +439,83 @@ def run_optimization(huc8_df, solar_proportion_df, wind_proportion_df,
         }
 
     return all_results
+
+
+def import_config(config_file):
+    """ 
+    Imports configuration file.
+
+    Parameters
+    ----------
+        config_file: string
+            Path to config file
+    """
+
+    content = configparser.ConfigParser()
+    content.read(config_file)
+    config = {'scenario_name': content['DEFAULT']['scenario_name'], 
+              'huc8_df': content['DEFAULT']['huc8_df'],
+              'solar_proportion_df': content['DEFAULT']['solar_proportion_df'],
+              'wind_proportion_df': content['DEFAULT']['wind_proportion_df'],
+              'demand_profile': content['DEFAULT']['demand_profile'],
+              'grid_only': content['DEFAULT'].getboolean('grid_only'),
+              'equity_type': content['DEFAULT']['equity_type'],
+              'weights_file': content['DEFAULT']['weights_file']}
+    
+    return config
+
+def run_optimization(config_file):
+    """
+    Run the complete optimization pipeline.
+
+    Parameters
+    ----------
+        config_file: string
+            Path to config file
+    """
+    
+    config = import_config(config_file)
+
+    print(f"\n{'='*50}")
+    print(f"Running: {config['scenario_name']}")
+    print(f"{'='*50}")
+
+    huc8_df = pd.read_csv(config['huc8_df'], index_col=0)
+    solar_proportion_df = pd.read_csv(config['solar_proportion_df'], index_col=0)
+    wind_proportion_df = pd.read_csv(config['wind_proportion_df'], index_col=0)
+    demand_profile = pd.read_csv(config['demand_profile'], index_col=0)
+
+    # Prepare data
+    data = prepare_optimization_data(
+        huc8_df, solar_proportion_df, wind_proportion_df, demand_profile
+    )
+
+
+    weights_df = pd.read_csv(config['weights_file'], index_col=0)
+
+    new_weights = []
+
+    for idx, weights in weights_df.iterrows():
+        # only run optimization problems that haven't been computed yet
+        if os.path.exists(f"Data/Model/{config['scenario_name']}/{weights['weights_name']}_alpha_{weights['alpha']}_beta_{weights['beta']}_gamma_{weights['gamma']}_delta_{weights['delta']}.pkl"):
+            pass
+        else:
+            new_weights.append(idx)
+
+    new_weights_df = weights_df.loc[new_weights]
+
+    weights_dict = new_weights_df.to_json()
+
+    
+    optimize_data_center_siting(
+        data, 
+        scenario_name=config['scenario_name'],
+        weights_dict=weights_dict,
+        grid_only=config['grid_only'],
+        equity_type=config['equity_type'],
+        verbose=True
+    )
+
 
 if __name__ == "__main__":
     print("Data Center Siting Optimization Module Loaded")
