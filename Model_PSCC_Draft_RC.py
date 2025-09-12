@@ -146,7 +146,8 @@ def prepare_optimization_data(huc8_df, solar_proportion_df, wind_proportion_df,
         'huc8_order': huc8_order
     }
 
-def compute_composite_costs(data, alpha=1.0, beta=1.0, gamma=1.0):
+# def compute_composite_costs(data, alpha=1.0, beta=1.0, gamma=1.0):
+def compute_composite_costs(data, alpha, beta, gamma):
     """
     Compute composite cost matrices M_g, M_s, M_w according to equations (1-3).
 
@@ -190,6 +191,101 @@ def compute_composite_costs(data, alpha=1.0, beta=1.0, gamma=1.0):
     M_w = alpha * (data['S_w'] / sigma_S) + beta * (data['P_w'] / sigma_P) + gamma * (data['E_w'] / sigma_E)
 
     return M_g, M_s, M_w, sigma_S, sigma_P, sigma_E
+
+
+def make_problem(data, equity_type='max',grid_only=False):
+    """ 
+    Formulate the data center siting optimization problem.
+
+    Parameters:
+    -----------
+    data : dict
+        Dictionary containing all prepared data
+    equity_type : str
+        'max' for maximum water scarcity or 'mad' for mean absolute difference
+    grid_only: boolean
+        If True, only allow use of grid electricity
+    """
+
+    alpha = cp.Parameter(nonneg=True)
+    beta = cp.Parameter(nonneg=True)
+    gamma = cp.Parameter(nonneg=True)
+    delta = cp.Parameter(nonneg=True)
+
+    L, T = data['L'], data['T']
+
+    # Compute composite costs
+    M_g, M_s, M_w, sigma_S, sigma_P, sigma_E = compute_composite_costs(data, alpha, beta, gamma)
+
+    # Decision variables. Keep the vectors as (L, 1) shape rather than (L,) for easy broadcasting.
+    x = cp.Variable((L, 1), nonneg=True)  # New DC capacity [MW]
+    a = cp.Variable((L, T), nonneg=True)  # DC demand allocation [MWh]
+    g = cp.Variable((L, T), nonneg=True)  # Grid power [MWh]
+    s = cp.Variable((L, 1), nonneg=True)  # Annual solar [MWh]
+    w = cp.Variable((L, 1), nonneg=True)  # Annual wind [MWh]
+
+    # Compute water scarcity vector S (equation 4)
+    S = (cp.diag(data['S_g']) @ cp.sum(g, axis=1, keepdims=True) +
+         cp.diag(data['S_s']) @ s +
+         cp.diag(data['S_w']) @ w +
+         cp.diag(data['S_dc']) @ cp.sum(a, axis=1, keepdims=True))
+    # ^ There was previously a "divide by T" on the grid and data center terms. I removed those to fit the optimization model we wrote in Overleaf. - Richard
+
+    print(f"S shape: {S.shape}")
+    # Water inequity term
+    if equity_type == 'max': # max water scarcity footprint
+        f_equity = cp.max(S)
+        equity_constraints = []
+        # f_equity = cp.Variable(nonneg=True)
+        # equity_constraints = [f_equity >= S]
+        # equity_constraints = [f_equity >= S[i] for i in range(L)]
+    else:  # mean absolute difference of water scarcity footprint
+        diff = cp.Variable((L, L), nonneg=True)
+        f_equity = cp.sum(diff) / (L * L)
+        equity_constraints = []
+        equity_constraints.append(diff >= S - S.T)
+        equity_constraints.append(diff >= S.T - S)
+
+        # for i in range(L):
+        #     for j in range(L):
+        #         equity_constraints.append(diff[i, j] >= S[i] - S[j])
+        #         equity_constraints.append(diff[i, j] >= S[j] - S[i])
+
+    # Objective function (equation 6)
+    obj = ((beta / sigma_P) * (data['P_dc'].T @ x) +
+           M_g.T @ cp.sum(g, axis=1) +
+           M_s.T @ s +
+           M_w.T @ w +
+           (alpha / sigma_S) * (data['S_dc'].T @ cp.sum(a, axis=1)) +
+           (delta / sigma_S) * f_equity)
+
+    # Constraints
+    constraints = []
+
+    # Meet demand (equation 7)
+    constraints.append(cp.sum(a, axis=0) >= data['D'])
+
+    # Power balance (equation 8)
+    constraints.append(g + cp.diag(s) @ data['C_s'] + cp.diag(w) @ data['C_w']  >= a)
+
+    # Capacity constraint (equation 9)
+
+    # constraints.append((x + data['Y']).reshape((data['Y'].shape[0], 1)) @ np.ones((1,T)) >= a)
+    constraints.append(x + data['Y'] >= a)
+
+    # Add equity constraints
+    constraints.extend(equity_constraints)
+
+    # Case with only grid electricity
+    if grid_only:
+        for l in range(L):
+            constraints.append(s[l] == 0)
+            constraints.append(w[l] == 0)
+
+    # Create problem
+    problem = cp.Problem(cp.Minimize(obj), constraints)
+
+    return problem
 
 def optimize_data_center_siting(data, alpha=1.0, beta=1.0, gamma=1.0, delta=1.0,
                                equity_type='max', verbose=True, grid_only=False):
@@ -260,7 +356,7 @@ def optimize_data_center_siting(data, alpha=1.0, beta=1.0, gamma=1.0, delta=1.0,
            M_g.T @ cp.sum(g, axis=1) +
            M_s.T @ s +
            M_w.T @ w +
-           (alpha / sigma_S) * data['S_dc'].T @ cp.sum(a, axis=1) +
+           (alpha / sigma_S) * (data['S_dc'].T @ cp.sum(a, axis=1)) +
            (delta / sigma_S) * f_equity)
 
     # Constraints
