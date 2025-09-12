@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import geopandas as gpd
 
-def prepare_optimization_data(huc8_ca_prices, footprint_df, solar_proportion_df, wind_proportion_df,
+def prepare_optimization_data(huc8_df, solar_proportion_df, wind_proportion_df,
                             demand_profile, data_center_cost=6e5):
     # as a note, previously data_center_cost was 12e6. Changed to 6e5, to equally spread data center 
     # cost across an estimated lifespan of 20 years. But we can also change it back if necessary
@@ -12,10 +12,8 @@ def prepare_optimization_data(huc8_ca_prices, footprint_df, solar_proportion_df,
 
     Parameters
     ----------
-        huc8_ca_prices: gpd.GeoDataFrame
-            GeoDataFrame with location-specific prices (grid, solar, wind, data center) data
-        footprint_df: gpd.GeoDataFrame
-            GeoDataFrame with location-specific water scarcity footprint and emissions footprint data
+        huc8_df: gpd.GeoDataFrame
+            GeoDataFrame with location-specific prices, water scarcity footprint, and emissions footprint data
         solar_proportion_df: pd.DataFrame
             DataFrame with time series of solar production
         wind_proportion_df: pd.DataFrame
@@ -48,34 +46,34 @@ def prepare_optimization_data(huc8_ca_prices, footprint_df, solar_proportion_df,
             huc8_order: order of HUC8 for each data array
     """
 
-    L = len(huc8_ca_prices)
+    L = len(huc8_df)
     T = len(demand_profile)
 
     # # detect correct HUC8 column name
     # huc8_col = None
     # for col in ['HUC8', 'huc8', 'HUC_8', 'HUC8_str']:
-    #     if col in huc8_ca_prices.columns:
+    #     if col in huc8_df.columns:
     #         huc8_col = col
     #         break
 
     # fix an order in which to count the HUC8 regions
-    huc8_order = huc8_ca_prices['HUC8'].values
+    huc8_order = huc8_df['HUC8'].values
 
     # Prepare cost data
     P_dc = np.ones(L) * data_center_cost  # Cost of new data center capacity [$/MW]
 
-    if 'Electricity Price [$/MWh]' in huc8_ca_prices.columns:
-        P_g = huc8_ca_prices['Electricity Price [$/MWh]'].values  # Grid electricity cost [$/MWh]
+    if 'Electricity Price [$/MWh]' in huc8_df.columns:
+        P_g = huc8_df['Electricity Price [$/MWh]'].values  # Grid electricity cost [$/MWh]
 
-    P_s = huc8_ca_prices['Mean Solar LCOE [$/MWh]'].values  # Solar LCOE [$/MWh]
-    P_w = huc8_ca_prices['Mean Wind LCOE [$/MWh]'].values  # Wind LCOE [$/MWh]
+    P_s = huc8_df['Mean Solar LCOE [$/MWh]'].values  # Solar LCOE [$/MWh]
+    P_w = huc8_df['Mean Wind LCOE [$/MWh]'].values  # Wind LCOE [$/MWh]
 
     # Prepare water scarcity footprint data
 
-    if 'HUC8_str' not in footprint_df.columns:
-        footprint_df['HUC8_str'] = footprint_df['HUC8'].map(lambda x: ''.join(['0']*(8-len(str(x)))) + str(x))
+    if 'HUC8_str' not in huc8_df.columns:
+        huc8_df['HUC8_str'] = huc8_df['HUC8'].map(lambda x: ''.join(['0']*(8-len(str(x)))) + str(x))
 
-    footprint_ordered = footprint_df.set_index('HUC8_str').reindex(huc8_order).reset_index()
+    footprint_ordered = huc8_df.set_index('HUC8_str').reindex(huc8_order).reset_index()
 
     S_dc = footprint_ordered['Data Center Water Scarcity Footprint [m3-eq/MWh]'].values  # DC water scarcity [m³-eq/MWh]
     S_g = footprint_ordered['Grid Water Scarcity Footprint [m3-eq/MWh]'].values  # Grid water scarcity [m³-eq/MWh]
@@ -84,8 +82,8 @@ def prepare_optimization_data(huc8_ca_prices, footprint_df, solar_proportion_df,
 
     # Prepare carbon footprint data
     E_g = footprint_ordered['Grid Carbon Footprint [tons CO2-eq/MWh]'].values  # Grid emissions [tons CO2-eq/MWh]
-    E_s = footprint_ordered['Solar CF_1MWh [tons CO2-eq/MWh]'].values  # Solar emissions [tons CO2-eq/MWh]
-    E_w = footprint_ordered['Wind CF_1MWh [tons CO2-eq/MWh]'].values  # Wind emissions [tons CO2-eq/MWh]
+    E_s = footprint_ordered['Solar Carbon Footprint [tons CO2-eq/MWh]'].values  # Solar emissions [tons CO2-eq/MWh]
+    E_w = footprint_ordered['Wind Carbon Footprint [tons CO2-eq/MWh]'].values  # Wind emissions [tons CO2-eq/MWh]
 
     # C_s = np.zeros((L, T))
     # C_w = np.zeros((L, T))
@@ -132,7 +130,8 @@ def prepare_optimization_data(huc8_ca_prices, footprint_df, solar_proportion_df,
     C_w = C_w / (C_w.sum(axis=1, keepdims=True) + 1e-10)
 
     # Demand profile
-    D = demand_profile.values.flatten()[:T]
+    D = demand_profile.values.flatten()
+    # [:T]
 
     # Existing capacity (assume zero for now, can be updated)
     Y = np.zeros(L)
@@ -223,58 +222,60 @@ def optimize_data_center_siting(data, alpha=1.0, beta=1.0, gamma=1.0, delta=1.0,
     M_g, M_s, M_w, sigma_S, sigma_P, sigma_E = compute_composite_costs(data, alpha, beta, gamma)
 
     # Decision variables
-    x = cp.Variable(L, nonneg=True)  # New DC capacity [MW]
+    x = cp.Variable((L, 1), nonneg=True)  # New DC capacity [MW]
     a = cp.Variable((L, T), nonneg=True)  # DC demand allocation [MWh]
     g = cp.Variable((L, T), nonneg=True)  # Grid power [MWh]
-    s = cp.Variable(L, nonneg=True)  # Annual solar [MWh]
-    w = cp.Variable(L, nonneg=True)  # Annual wind [MWh]
+    s = cp.Variable((L, 1), nonneg=True)  # Annual solar [MWh]
+    w = cp.Variable((L, 1), nonneg=True)  # Annual wind [MWh]
 
     # Compute water scarcity vector S (equation 4)
-    S = (cp.diag(data['S_g']) @ cp.sum(g, axis=1) +
+    S = (cp.diag(data['S_g']) @ cp.sum(g, axis=1, keepdims=True) +
          cp.diag(data['S_s']) @ s +
          cp.diag(data['S_w']) @ w +
-         cp.diag(data['S_dc']) @ cp.sum(a, axis=1))
-    
+         cp.diag(data['S_dc']) @ cp.sum(a, axis=1, keepdims=True))
     # ^ There was previously a "divide by T" on the grid and data center terms. I removed those to fit the optimization model we wrote in Overleaf. - Richard
 
+    print(f"S shape: {S.shape}")
     # Water inequity term
     if equity_type == 'max': # max water scarcity footprint
-        f_equity = cp.Variable(nonneg=True)
-        equity_constraints = [f_equity >= S[i] for i in range(L)]
+        f_equity = cp.max(S)
+        equity_constraints = []
+        # f_equity = cp.Variable(nonneg=True)
+        # equity_constraints = [f_equity >= S]
+        # equity_constraints = [f_equity >= S[i] for i in range(L)]
     else:  # mean absolute difference of water scarcity footprint
         diff = cp.Variable((L, L), nonneg=True)
         f_equity = cp.sum(diff) / (L * L)
         equity_constraints = []
-        for i in range(L):
-            for j in range(L):
-                equity_constraints.append(diff[i, j] >= S[i] - S[j])
-                equity_constraints.append(diff[i, j] >= S[j] - S[i])
+        equity_constraints.append(diff >= S - S.T)
+        equity_constraints.append(diff >= S.T - S)
+
+        # for i in range(L):
+        #     for j in range(L):
+        #         equity_constraints.append(diff[i, j] >= S[i] - S[j])
+        #         equity_constraints.append(diff[i, j] >= S[j] - S[i])
 
     # Objective function (equation 6)
-    obj = ((beta / sigma_P) * cp.sum(data['P_dc'] * x) +
-           cp.sum(M_g * cp.sum(g, axis=1)) +
-           cp.sum(M_s * s) +
-           cp.sum(M_w * w) +
-           (alpha / sigma_S) * cp.sum(data['S_dc'] * cp.sum(a, axis=1)) +
+    obj = ((beta / sigma_P) * (data['P_dc'].T @ x) +
+           M_g.T @ cp.sum(g, axis=1) +
+           M_s.T @ s +
+           M_w.T @ w +
+           (alpha / sigma_S) * data['S_dc'].T @ cp.sum(a, axis=1) +
            (delta / sigma_S) * f_equity)
 
     # Constraints
     constraints = []
 
     # Meet demand (equation 7)
-    for t in range(T):
-        constraints.append(cp.sum(a[:, t]) >= data['D'][t])
+    constraints.append(cp.sum(a, axis=0) >= data['D'])
 
     # Power balance (equation 8)
-    for l in range(L):
-        for t in range(T):
-            constraints.append(g[l, t] + s[l] * data['C_s'][l, t] +
-                             w[l] * data['C_w'][l, t] >= a[l, t])
+    constraints.append(g + cp.diag(s) @ data['C_s'] + cp.diag(w) @ data['C_w']  >= a)
 
     # Capacity constraint (equation 9)
-    for l in range(L):
-        for t in range(T):
-            constraints.append((x[l] + data['Y'][l]) >= a[l, t])
+
+    # constraints.append((x + data['Y']).reshape((data['Y'].shape[0], 1)) @ np.ones((1,T)) >= a)
+    constraints.append(x + data['Y'] >= a)
 
     # Add equity constraints
     constraints.extend(equity_constraints)
@@ -287,7 +288,7 @@ def optimize_data_center_siting(data, alpha=1.0, beta=1.0, gamma=1.0, delta=1.0,
 
     # Create and solve problem
     problem = cp.Problem(cp.Minimize(obj), constraints)
-    problem.solve(solver=cp.GUROBI if cp.installed_solvers()[0] == 'GUROBI' else cp.ECOS, verbose=verbose)
+    problem.solve(solver=cp.GUROBI if 'GUROBI' in cp.installed_solvers() else cp.ECOS, verbose=verbose)
 
     if problem.status not in ['optimal', 'optimal_inaccurate']:
         print(f"Warning: Problem status is {problem.status}")
@@ -307,7 +308,7 @@ def optimize_data_center_siting(data, alpha=1.0, beta=1.0, gamma=1.0, delta=1.0,
 
     return results
 
-def analyze_results(results, data, huc8_ca_prices):
+def analyze_results(results, data, huc8_df):
     """
     Analyze and visualize optimization results
     """
@@ -358,7 +359,7 @@ def analyze_results(results, data, huc8_ca_prices):
 
     return results_df, total_metrics
 
-def run_optimization(huc8_ca_prices, footprint_df, solar_proportion_df, wind_proportion_df,
+def run_optimization(huc8_df, solar_proportion_df, wind_proportion_df,
                     demand_profile, scenario_name="Optimization Results"):
     """
     Run the complete optimization pipeline
@@ -369,9 +370,7 @@ def run_optimization(huc8_ca_prices, footprint_df, solar_proportion_df, wind_pro
 
     # Prepare data
     data = prepare_optimization_data(
-        huc8_ca_prices, footprint_df,
-        solar_proportion_df, wind_proportion_df,
-        demand_profile
+        huc8_df, solar_proportion_df, wind_proportion_df, demand_profile
     )
 
     # Run optimization with different weight configurations
@@ -394,10 +393,10 @@ def run_optimization(huc8_ca_prices, footprint_df, solar_proportion_df, wind_pro
             beta=scenario['beta'],
             gamma=scenario['gamma'],
             delta=scenario['delta'],
-            verbose=False
+            verbose=True
         )
 
-        results_df, metrics = analyze_results(results, data, huc8_ca_prices)
+        results_df, metrics = analyze_results(results, data, huc8_df)
 
         print(f"Total New Capacity: {metrics['Total_New_Capacity_MW']:.1f} MW")
         print(f"Renewable Energy: {metrics['Renewable_Percent']:.1f}%")
@@ -418,4 +417,4 @@ if __name__ == "__main__":
     print("Data Center Siting Optimization Module Loaded")
     print("Use run_optimization() function to execute the optimization")
     print("\nExample:")
-    print("results = run_optimization(huc8_ca_prices, footprint_df, solar_proportion_df, wind_proportion_df, flat_demand_2GWh)")
+    print("results = run_optimization(huc8_df, solar_proportion_df, wind_proportion_df, flat_demand_2GWh)")
