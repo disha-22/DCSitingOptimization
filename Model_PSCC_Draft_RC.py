@@ -314,9 +314,8 @@ def optimize_data_center_siting(data, scenario_name, weights_dict, equity_type='
 
 
         # log statistics in wandb
-        if wandb:            
-            wandb.init(project='DCSitingOptimization', name=f"{scenario_name}/{weights_name}", config=params)
-            wandb.log(total_metrics)
+        with wandb.init(project='DCSitingOptimization', name=f"{scenario_name}/{weights_name}", config=params) as run:
+            run.log(total_metrics)
 
 
         # Store results
@@ -325,6 +324,10 @@ def optimize_data_center_siting(data, scenario_name, weights_dict, equity_type='
         #     'results_df': results_df,
         #     'metrics': metrics
         # }
+
+        if not os.path.exists(f"Data/Models/{scenario_name}"):
+            os.mkdir(f"Data/Models/{scenario_name}/")
+
 
         with open(f"Data/Models/{scenario_name}/{weights_name}_alpha_{params['alpha']}_beta_{params['beta']}_gamma_{params['gamma']}_delta_{params['delta']}.pkl", "wb") as f:
             pickle.dump({'results': results,
@@ -354,6 +357,7 @@ def analyze_results(results, data):
     results_df['Grid_Percent'] = 100 * results_df['Total_Grid_MWh'] / (total_energy + 1e-10)
     results_df['Solar_Percent'] = 100 * results_df['Solar_MWh'] / (total_energy + 1e-10)
     results_df['Wind_Percent'] = 100 * results_df['Wind_MWh'] / (total_energy + 1e-10)
+    results_df['Data_Center_Capacity_Factor'] = results_df['Total_Demand_MWh'] / (total_energy + 1e-10)
 
     # Calculate total metrics
     total_metrics = {
@@ -361,8 +365,8 @@ def analyze_results(results, data):
         'Total_Grid_MWh': np.sum(results['g']),
         'Total_Solar_MWh': np.sum(results['s']),
         'Total_Wind_MWh': np.sum(results['w']),
-        'Water_Inequity': results['f_equity'],
-        'Objective_Value': results['objective']
+        'Water_Inequity': results['Water_Inequity'],
+        'Objective_Value': results['Objective_Value']
     }
 
     # Calculate environmental impacts
@@ -480,7 +484,7 @@ def run_optimization(config_file):
     print(f"Running: {config['scenario_name']}")
     print(f"{'='*50}")
 
-    huc8_df = pd.read_csv(config['huc8_df'], index_col=0)
+    huc8_df = gpd.read_file(config['huc8_df'])
     solar_proportion_df = pd.read_csv(config['solar_proportion_df'], index_col=0)
     wind_proportion_df = pd.read_csv(config['wind_proportion_df'], index_col=0)
     demand_profile = pd.read_csv(config['demand_profile'], index_col=0)
@@ -504,7 +508,7 @@ def run_optimization(config_file):
 
     new_weights_df = weights_df.loc[new_weights]
 
-    weights_dict = new_weights_df.to_json()
+    weights_dict = new_weights_df.T.to_dict()
 
     
     optimize_data_center_siting(
