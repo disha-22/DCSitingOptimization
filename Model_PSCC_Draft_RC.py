@@ -213,7 +213,6 @@ def optimize_data_center_siting(data, scenario_name, weights_dict, equity_type='
          cp.diag(data['S_dc']) @ cp.sum(a, axis=1, keepdims=True))
     # ^ There was previously a "divide by T" on the grid and data center terms. I removed those to fit the optimization model we wrote in Overleaf. - Richard
 
-    print(f"S shape: {S.shape}")
     # Water inequity term
     if equity_type == 'max': # max water scarcity footprint
         f_equity = cp.max(S)
@@ -221,17 +220,20 @@ def optimize_data_center_siting(data, scenario_name, weights_dict, equity_type='
         # f_equity = cp.Variable(nonneg=True)
         # equity_constraints = [f_equity >= S]
         # equity_constraints = [f_equity >= S[i] for i in range(L)]
-    else:  # mean absolute difference of water scarcity footprint
-        diff = cp.Variable((L, L), nonneg=True)
-        f_equity = cp.sum(diff) / (L * L)
+    elif equity_type == 'mad':  # mean absolute difference of water scarcity footprint
+        # diff = cp.Variable((L, L), nonneg=True)
+        f_equity = cp.sum(cp.abs(S - S.T)) / (L * L)
+        # f_equity = cp.sum(diff) / (L * L)
         equity_constraints = []
-        equity_constraints.append(diff >= S - S.T)
-        equity_constraints.append(diff >= S.T - S)
-
+        # equity_constraints.append(diff >= cp.abs(S - S.T))
+        # equity_constraints.append(diff >= S - S.T)
+        # equity_constraints.append(diff >= S.T - S)
         # for i in range(L):
         #     for j in range(L):
         #         equity_constraints.append(diff[i, j] >= S[i] - S[j])
         #         equity_constraints.append(diff[i, j] >= S[j] - S[i])
+    else:
+        raise Exception(f"Equity type {equity_type} not recognized.")
 
     # Objective function (equation 6)
     obj = ((beta / sigma_P) * (data['P_dc'].T @ x) +
@@ -349,15 +351,18 @@ def analyze_results(results, data):
         'Total_Grid_MWh': np.sum(results['g'], axis=1),
         'Solar_MWh': results['s'].flatten(),
         'Wind_MWh': results['w'].flatten(),
-        'Total_Demand_MWh': np.sum(results['a'], axis=1)
+        'Total_Demand_MWh': np.sum(results['a'], axis=1),
+        'Data_Center_Cost_Per_MWh': data['P_dc']
     })
 
     # Calculate percentages
     total_energy = results_df['Total_Grid_MWh'] + results_df['Solar_MWh'] + results_df['Wind_MWh']
+
+    # note that there may be curtailed energy from solar and wind. We can refine the metric later if needed.
     results_df['Grid_Percent'] = 100 * results_df['Total_Grid_MWh'] / (total_energy + 1e-10)
     results_df['Solar_Percent'] = 100 * results_df['Solar_MWh'] / (total_energy + 1e-10)
     results_df['Wind_Percent'] = 100 * results_df['Wind_MWh'] / (total_energy + 1e-10)
-    results_df['Data_Center_Capacity_Factor'] = results_df['Total_Demand_MWh'] / (total_energy + 1e-10)
+    results_df['Data_Center_Capacity_Factor'] = results_df['Total_Demand_MWh'].where(results_df['Total_Demand_MWh'] > 1, 0) / (results_df['New_Capacity_MW'] * 8760 + 1e-10)
 
     # Calculate total metrics
     total_metrics = {
@@ -388,61 +393,6 @@ def analyze_results(results, data):
     total_metrics['Renewable_Percent'] = total_metrics['Solar_Percent'] + total_metrics['Wind_Percent']
 
     return results_df, total_metrics
-
-def run_optimization_old(huc8_df, solar_proportion_df, wind_proportion_df,
-                    demand_profile, scenario_name="Optimization Results"):
-    """
-    Run the complete optimization pipeline
-    """
-
-    print(f"\n{'='*50}")
-    print(f"Running: {scenario_name}")
-    print(f"{'='*50}")
-
-    # Prepare data
-    data = prepare_optimization_data(
-        huc8_df, solar_proportion_df, wind_proportion_df, demand_profile
-    )
-
-    # Run optimization with different weight configurations
-    scenarios = [
-        {'name': 'Cost Only', 'alpha': 0, 'beta': 1, 'gamma': 0, 'delta': 0},
-        {'name': 'Balanced', 'alpha': 1, 'beta': 1, 'gamma': 1, 'delta': 0},
-        {'name': 'With Equity', 'alpha': 1, 'beta': 1, 'gamma': 1, 'delta': 1},
-        {'name': 'Strong Equity', 'alpha': 1, 'beta': 1, 'gamma': 1, 'delta': 5}
-    ]
-
-    all_results = {}
-
-    for scenario in scenarios:
-        print(f"\n{scenario['name']}:")
-        print("-" * 30)
-
-        results = optimize_data_center_siting(
-            data,
-            alpha=scenario['alpha'],
-            beta=scenario['beta'],
-            gamma=scenario['gamma'],
-            delta=scenario['delta'],
-            verbose=True
-        )
-
-        results_df, metrics = analyze_results(results, data, huc8_df)
-
-        print(f"Total New Capacity: {metrics['Total_New_Capacity_MW']:.1f} MW")
-        print(f"Renewable Energy: {metrics['Renewable_Percent']:.1f}%")
-        print(f"Water Inequity: {metrics['Water_Inequity']:.2f}")
-        print(f"Total Emissions: {metrics['Total_Emissions_tonsCO2']:.0f} tons CO2")
-        print(f"Total Water Scarcity: {metrics['Total_Water_Scarcity_m3eq']:.0f} m³-eq")
-
-        # Store results
-        all_results[scenario['name']] = {
-            'results': results,
-            'results_df': results_df,
-            'metrics': metrics
-        }
-
-    return all_results
 
 
 def import_config(config_file):
@@ -484,24 +434,25 @@ def run_optimization(config_file):
     print(f"Running: {config['scenario_name']}")
     print(f"{'='*50}")
 
+    # read data
     huc8_df = gpd.read_file(config['huc8_df'])
     solar_proportion_df = pd.read_csv(config['solar_proportion_df'], index_col=0)
     wind_proportion_df = pd.read_csv(config['wind_proportion_df'], index_col=0)
     demand_profile = pd.read_csv(config['demand_profile'], index_col=0)
 
-    # Prepare data
+    # prepare data
     data = prepare_optimization_data(
         huc8_df, solar_proportion_df, wind_proportion_df, demand_profile
     )
 
-
+    # ignore weights we've seen before
     weights_df = pd.read_csv(config['weights_file'], index_col=0)
 
     new_weights = []
 
     for idx, weights in weights_df.iterrows():
         # only run optimization problems that haven't been computed yet
-        if os.path.exists(f"Data/Model/{config['scenario_name']}/{weights['weights_name']}_alpha_{weights['alpha']}_beta_{weights['beta']}_gamma_{weights['gamma']}_delta_{weights['delta']}.pkl"):
+        if os.path.exists(f"Data/Models/{config['scenario_name']}/{weights['weights_name']}_alpha_{weights['alpha']}_beta_{weights['beta']}_gamma_{weights['gamma']}_delta_{weights['delta']}.pkl"):
             pass
         else:
             new_weights.append(idx)
