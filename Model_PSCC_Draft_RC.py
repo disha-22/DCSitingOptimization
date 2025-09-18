@@ -15,7 +15,7 @@ import wandb
 import os
 
 def prepare_optimization_data(huc8_df, solar_proportion_df, wind_proportion_df,
-                            demand_profile, data_center_cost=6e5):
+                            demand_profile, data_center_cost=6e5, train_path=None):
     # as a note, previously data_center_cost was 12e6. Changed to 6e5, to equally spread data center 
     # cost across an estimated lifespan of 20 years. But we can also change it back if necessary
     """
@@ -33,6 +33,8 @@ def prepare_optimization_data(huc8_df, solar_proportion_df, wind_proportion_df,
             Numpy array with time series of total data center demand profile
         data_center_cost: float
             Cost of data center, in ($/MWh-year)
+        train_path: string
+            Whether to include data from a trained optimization file. If it's a string, then it should point to a path of `train' results.
 
     Returns
     -------
@@ -111,17 +113,43 @@ def prepare_optimization_data(huc8_df, solar_proportion_df, wind_proportion_df,
     # [:T]
 
     # Existing capacity (assume zero for now, can be updated)
-    Y = np.zeros(L)
+    Y = np.zeros((L, T)) # we reshape to (L, T) in order to ensure easier broadcasting within the optimization model.
 
-    return {
-        'L': L, 'T': T,
-        'P_dc': P_dc, 'P_g': P_g, 'P_s': P_s, 'P_w': P_w,
-        'S_dc': S_dc, 'S_g': S_g, 'S_s': S_s, 'S_w': S_w,
-        'E_g': E_g, 'E_s': E_s, 'E_w': E_w,
-        'C_s': C_s, 'C_w': C_w,
-        'D': D, 'Y': Y,
-        'huc8_order': huc8_order
-    }
+
+    # Validation results
+    if train_path is not None:
+        # read in values for x, s, w
+        with open(train_path, "rb") as f:
+            train_results = pickle.load(f)
+
+        x = train_results['results']['x']
+        s = train_results['results']['s']
+        w = train_results['results']['w']
+
+        return {
+            'L': L, 'T': T,
+            'P_dc': P_dc, 'P_g': P_g, 'P_s': P_s, 'P_w': P_w,
+            'S_dc': S_dc, 'S_g': S_g, 'S_s': S_s, 'S_w': S_w,
+            'E_g': E_g, 'E_s': E_s, 'E_w': E_w,
+            'C_s': C_s, 'C_w': C_w,
+            'D': D, 'Y': Y,
+            'huc8_order': huc8_order,
+            'x': x,
+            's': s,
+            'w': w
+        }
+        
+
+    else:
+        return {
+            'L': L, 'T': T,
+            'P_dc': P_dc, 'P_g': P_g, 'P_s': P_s, 'P_w': P_w,
+            'S_dc': S_dc, 'S_g': S_g, 'S_s': S_s, 'S_w': S_w,
+            'E_g': E_g, 'E_s': E_s, 'E_w': E_w,
+            'C_s': C_s, 'C_w': C_w,
+            'D': D, 'Y': Y,
+            'huc8_order': huc8_order
+        }
 
 def compute_composite_costs(data, alpha, beta, gamma, normalization='all_std'):
     """
@@ -160,7 +188,7 @@ def compute_composite_costs(data, alpha, beta, gamma, normalization='all_std'):
 
     all_S = np.concatenate([data['S_g'], data['S_s'], data['S_w'], data['S_dc']], axis=0)
     all_P = np.concatenate([data['P_g'], data['P_g'], data['P_w'], data['P_dc']/8760], axis=0) # because data['P_dc'] is in units of $/(MW-year), multiply by (1 year/8760 h) to standardize to units of $/MWh.
-    all_E = np.concatenate([data['E_g'], data['E_s'], data['E_w'], np.zeros((data['E_g'].shape,))], axis=0) # note that data center emissions are 0 for any location.
+    all_E = np.concatenate([data['E_g'], data['E_s'], data['E_w'], np.zeros((data['E_g'].shape[0],))], axis=0) # note that data center emissions are 0 for any location.
 
     # different types of normalization
     if normalization == 'grid_std':
@@ -175,6 +203,8 @@ def compute_composite_costs(data, alpha, beta, gamma, normalization='all_std'):
         norm_S = np.max(all_S)
         norm_P = np.max(all_P)
         norm_E = np.max(all_E)
+    else:
+        raise Exception(f"Unrecognized normalization {normalization}.")
 
 
     # Avoid division by zero
@@ -189,7 +219,7 @@ def compute_composite_costs(data, alpha, beta, gamma, normalization='all_std'):
 
     return M_g, M_s, M_w, norm_S, norm_P, norm_E
 
-def optimize_data_center_siting(data, scenario_name, weights_dict, equity_type='max', verbose=True, grid_only=False, normalization='all_std'):
+def optimize_data_center_siting(data, scenario_name, weights_dict, equity_type='max', verbose=True, grid_only=False, normalization='all_std', train_path=None):
     """
     Solve the data center siting optimization problem
 
@@ -213,6 +243,8 @@ def optimize_data_center_siting(data, scenario_name, weights_dict, equity_type='
             - 'grid_std' is calculating standard deviation by grid. 
             - 'all_std' is calculating standard deviation with all data.
             - 'all_max' is calculating maximum with all data.
+    train_path: string
+        Path to results from a trained optimization model. Applies when we are running a validation case.    
     """
 
     alpha = cp.Parameter(nonneg=True)
@@ -232,20 +264,25 @@ def optimize_data_center_siting(data, scenario_name, weights_dict, equity_type='
     s = cp.Variable((L, 1), nonneg=True)  # Annual solar [MWh]
     w = cp.Variable((L, 1), nonneg=True)  # Annual wind [MWh]
 
+
+    train_constraints = []
+
+    if train_path is not None:
+        train_constraints.append(x == data['x'])
+        train_constraints.append(s == data['s'])
+        train_constraints.append(w == data['w'])
+
+
     # Compute water scarcity vector S (equation 4)
     S = (cp.diag(data['S_g']) @ cp.sum(g, axis=1, keepdims=True) +
          cp.diag(data['S_s']) @ s +
          cp.diag(data['S_w']) @ w +
          cp.diag(data['S_dc']) @ cp.sum(a, axis=1, keepdims=True))
-    # ^ There was previously a "divide by T" on the grid and data center terms. I removed those to fit the optimization model we wrote in Overleaf. - Richard
 
     # Water inequity term
     if equity_type == 'max': # max water scarcity footprint
         f_equity = cp.max(S)
         equity_constraints = []
-        # f_equity = cp.Variable(nonneg=True)
-        # equity_constraints = [f_equity >= S]
-        # equity_constraints = [f_equity >= S[i] for i in range(L)]
     elif equity_type == 'mad':  # mean absolute difference of water scarcity footprint
         # diff = cp.Variable((L, L), nonneg=True)
         f_equity = cp.sum(cp.abs(S - S.T)) / (L * L)
@@ -271,6 +308,9 @@ def optimize_data_center_siting(data, scenario_name, weights_dict, equity_type='
 
     # Constraints
     constraints = []
+
+    # Enforce fixed variables for validation optimization models
+    constraints.extend(train_constraints)
 
     # Meet demand (equation 7)
     constraints.append(cp.sum(a, axis=0) >= data['D'])
@@ -440,7 +480,9 @@ def import_config(config_file):
               'demand_profile': content['DEFAULT']['demand_profile'],
               'grid_only': content['DEFAULT'].getboolean('grid_only'),
               'equity_type': content['DEFAULT']['equity_type'],
-              'weights_file': content['DEFAULT']['weights_file']}
+              'weights_file': content['DEFAULT']['weights_file'],
+              'train_path': content['DEFAULT'].get('train_path', None),
+              'normalization': content['DEFAULT']['normalization']}
     
     return config
 
@@ -468,7 +510,7 @@ def run_optimization(config_file):
 
     # prepare data
     data = prepare_optimization_data(
-        huc8_df, solar_proportion_df, wind_proportion_df, demand_profile
+        huc8_df, solar_proportion_df, wind_proportion_df, demand_profile, train_path=config['train_path']
     )
 
     # ignore weights we've seen before
@@ -492,9 +534,11 @@ def run_optimization(config_file):
         data, 
         scenario_name=config['scenario_name'],
         weights_dict=weights_dict,
-        grid_only=config['grid_only'],
         equity_type=config['equity_type'],
-        verbose=True
+        verbose=True,
+        grid_only=config['grid_only'],
+        normalization=config['normalization'],
+        train_path=config['train_path']
     )
 
 
