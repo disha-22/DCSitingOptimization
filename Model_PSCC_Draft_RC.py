@@ -123,8 +123,7 @@ def prepare_optimization_data(huc8_df, solar_proportion_df, wind_proportion_df,
         'huc8_order': huc8_order
     }
 
-# def compute_composite_costs(data, alpha=1.0, beta=1.0, gamma=1.0):
-def compute_composite_costs(data, alpha, beta, gamma):
+def compute_composite_costs(data, alpha, beta, gamma, normalization='all_std'):
     """
     Compute composite cost matrices M_g, M_s, M_w according to equations (1-3).
 
@@ -136,6 +135,12 @@ def compute_composite_costs(data, alpha, beta, gamma):
             Weighting factor for monetary cost.
         gamma: float
             Weighting factor for emissions footprint.
+        normalization: string
+            Which type of normalization to use. 
+            Options: 
+                - 'grid_std' is calculating standard deviation by grid. 
+                - 'all_std' is calculating standard deviation with all data.
+                - 'all_max' is calculating maximum with all data.
 
     Returns
     -------
@@ -145,31 +150,46 @@ def compute_composite_costs(data, alpha, beta, gamma):
             Composite cost for solar
         M_w: pd.Series
             Composite cost for wind
-        sigma_S: float
-            Standard deviation for water scarcity footprint
-        sigma_P: float
-            Standard deviation for monetary cost
-        sigma_E: float
-            Standard deviation for emissions footprint
+        norm_S: float
+            Normalization factor for water scarcity footprint
+        norm_P: float
+            Normalization factor for monetary cost
+        norm_E: float
+            Normalization factor for emissions footprint
     """
 
-    sigma_S = np.std(data['S_g'])
-    sigma_P = np.std(data['P_g'])
-    sigma_E = np.std(data['E_g'])
+    all_S = np.concatenate([data['S_g'], data['S_s'], data['S_w'], data['S_dc']], axis=0)
+    all_P = np.concatenate([data['P_g'], data['P_g'], data['P_w'], data['P_dc']/8760], axis=0) # because data['P_dc'] is in units of $/(MW-year), multiply by (1 year/8760 h) to standardize to units of $/MWh.
+    all_E = np.concatenate([data['E_g'], data['E_s'], data['E_w'], np.zeros((data['E_g'].shape,))], axis=0) # note that data center emissions are 0 for any location.
+
+    # different types of normalization
+    if normalization == 'grid_std':
+        norm_S = np.std(data['S_g'])
+        norm_P = np.std(data['P_g'])
+        norm_E = np.std(data['E_g'])
+    elif normalization == 'all_std':
+        norm_S = np.std(all_S)
+        norm_P = np.std(all_P)
+        norm_E = np.std(all_E)
+    elif normalization == 'all_max':
+        norm_S = np.max(all_S)
+        norm_P = np.max(all_P)
+        norm_E = np.max(all_E)
+
 
     # Avoid division by zero
-    sigma_S = max(sigma_S, 1e-10)
-    sigma_P = max(sigma_P, 1e-10)
-    sigma_E = max(sigma_E, 1e-10)
+    norm_S = max(norm_S, 1e-10)
+    norm_P = max(norm_P, 1e-10)
+    norm_E = max(norm_E, 1e-10)
 
     # Compute composite costs
-    M_g = alpha * (data['S_g'] / sigma_S) + beta * (data['P_g'] / sigma_P) + gamma * (data['E_g'] / sigma_E)
-    M_s = alpha * (data['S_s'] / sigma_S) + beta * (data['P_s'] / sigma_P) + gamma * (data['E_s'] / sigma_E)
-    M_w = alpha * (data['S_w'] / sigma_S) + beta * (data['P_w'] / sigma_P) + gamma * (data['E_w'] / sigma_E)
+    M_g = alpha * (data['S_g'] / norm_S) + beta * (data['P_g'] / norm_P) + gamma * (data['E_g'] / norm_E)
+    M_s = alpha * (data['S_s'] / norm_S) + beta * (data['P_s'] / norm_P) + gamma * (data['E_s'] / norm_E)
+    M_w = alpha * (data['S_w'] / norm_S) + beta * (data['P_w'] / norm_P) + gamma * (data['E_w'] / norm_E)
 
-    return M_g, M_s, M_w, sigma_S, sigma_P, sigma_E
+    return M_g, M_s, M_w, norm_S, norm_P, norm_E
 
-def optimize_data_center_siting(data, scenario_name, weights_dict, equity_type='max', verbose=True, grid_only=False):
+def optimize_data_center_siting(data, scenario_name, weights_dict, equity_type='max', verbose=True, grid_only=False, normalization='all_std'):
     """
     Solve the data center siting optimization problem
 
@@ -187,6 +207,12 @@ def optimize_data_center_siting(data, scenario_name, weights_dict, equity_type='
         True if we want to print updates as optimization is in progress.
     grid_only: boolean
         If True, only allow use of grid electricity
+    normalization: string
+        Which type of normalization to use. 
+        Options: 
+            - 'grid_std' is calculating standard deviation by grid. 
+            - 'all_std' is calculating standard deviation with all data.
+            - 'all_max' is calculating maximum with all data.
     """
 
     alpha = cp.Parameter(nonneg=True)
@@ -197,7 +223,7 @@ def optimize_data_center_siting(data, scenario_name, weights_dict, equity_type='
     L, T = data['L'], data['T']
 
     # Compute composite costs
-    M_g, M_s, M_w, sigma_S, sigma_P, sigma_E = compute_composite_costs(data, alpha, beta, gamma)
+    M_g, M_s, M_w, norm_S, norm_P, norm_E = compute_composite_costs(data, alpha, beta, gamma, normalization=normalization)
 
     # Decision variables. Keep the vectors as (L, 1) shape rather than (L,) for easy broadcasting.
     x = cp.Variable((L, 1), nonneg=True)  # New DC capacity [MW]
@@ -236,12 +262,12 @@ def optimize_data_center_siting(data, scenario_name, weights_dict, equity_type='
         raise Exception(f"Equity type {equity_type} not recognized.")
 
     # Objective function (equation 6)
-    obj = ((beta / sigma_P) * (data['P_dc'].T @ x) +
+    obj = ((beta / norm_P) * (data['P_dc'].T @ x) +
            M_g.T @ cp.sum(g, axis=1) +
            M_s.T @ s +
            M_w.T @ w +
-           (alpha / sigma_S) * (data['S_dc'].T @ cp.sum(a, axis=1)) +
-           (delta / sigma_S) * f_equity)
+           (alpha / norm_S) * (data['S_dc'].T @ cp.sum(a, axis=1)) +
+           (delta / norm_S) * f_equity)
 
     # Constraints
     constraints = []
