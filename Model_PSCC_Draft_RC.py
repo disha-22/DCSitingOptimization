@@ -16,8 +16,6 @@ import os
 
 def prepare_optimization_data(huc8_df, solar_proportion_df, wind_proportion_df,
                             demand_profile, data_center_cost=6e5, train_path=None):
-    # as a note, previously data_center_cost was 12e6. Changed to 6e5, to equally spread data center 
-    # cost across an estimated lifespan of 20 years. But we can also change it back if necessary
     """
     Prepare all data matrices for the optimization problem
 
@@ -57,37 +55,28 @@ def prepare_optimization_data(huc8_df, solar_proportion_df, wind_proportion_df,
             D: demand profile
             Y: existing data center capacity in each location
             huc8_order: order of HUC8 for each data array
+            (if train_path was inputted: we can return the optimized results for renewables validation.)
+            x: optimized data center capacity
+            s: optimized solar capacity
+            w: optimized wind capacity
     """
 
     L = len(huc8_df)
     T = len(demand_profile)
-
-    # # detect correct HUC8 column name
-    # huc8_col = None
-    # for col in ['HUC8', 'huc8', 'HUC_8', 'HUC8_str']:
-    #     if col in huc8_df.columns:
-    #         huc8_col = col
-    #         break
 
     # fix an order in which to count the HUC8 regions
     huc8_order = huc8_df['HUC8'].values
 
     # Prepare cost data
     P_dc = np.ones(L) * data_center_cost  # Cost of new data center capacity [$/MW]
-
-    if 'Electricity Price [$/MWh]' in huc8_df.columns:
-        P_g = huc8_df['Electricity Price [$/MWh]'].values  # Grid electricity cost [$/MWh]
-
+    P_g = huc8_df['Electricity Price [$/MWh]'].values  # Grid electricity cost [$/MWh]
     P_s = huc8_df['Mean Solar LCOE [$/MWh]'].values  # Solar LCOE [$/MWh]
     P_w = huc8_df['Mean Wind LCOE [$/MWh]'].values  # Wind LCOE [$/MWh]
 
-    # Prepare water scarcity footprint data
-
-    if 'HUC8_str' not in huc8_df.columns:
-        huc8_df['HUC8_str'] = huc8_df['HUC8'].map(lambda x: ''.join(['0']*(8-len(str(x)))) + str(x))
-
+    # match order between price and footprint DF
     footprint_ordered = huc8_df.set_index('HUC8_str').reindex(huc8_order).reset_index()
 
+    # Prepare water scarcity footprint data
     S_dc = footprint_ordered['Data Center Water Scarcity Footprint [m3-eq/MWh]'].values  # DC water scarcity [m³-eq/MWh]
     S_g = footprint_ordered['Grid Water Scarcity Footprint [m3-eq/MWh]'].values  # Grid water scarcity [m³-eq/MWh]
     S_s = footprint_ordered['Solar Water Scarcity Footprint [m3-eq/MWh]'].values  # Solar water scarcity [m³-eq/MWh]
@@ -98,23 +87,19 @@ def prepare_optimization_data(huc8_df, solar_proportion_df, wind_proportion_df,
     E_s = footprint_ordered['Solar Carbon Footprint [tons CO2-eq/MWh]'].values  # Solar emissions [tons CO2-eq/MWh]
     E_w = footprint_ordered['Wind Carbon Footprint [tons CO2-eq/MWh]'].values  # Wind emissions [tons CO2-eq/MWh]
 
-
-    # read solar and wind proportion data
+    # read solar and wind proportion data (and reshape to (HUC8 subbasin, hour))
     C_s = solar_proportion_df[huc8_order].values.T
     C_w = wind_proportion_df[huc8_order].values.T
 
-    # normalize such that each row sums to 1, and indicates a proportion
-
+    # normalize such that each solar and wind row sums to 1 and indicates a proportion
     C_s = C_s / (C_s.sum(axis=1, keepdims=True) + 1e-10)
     C_w = C_w / (C_w.sum(axis=1, keepdims=True) + 1e-10)
 
     # Demand profile
     D = demand_profile.values.flatten()
-    # [:T]
 
     # Existing capacity (assume zero for now, can be updated)
     Y = np.zeros((L, T)) # we reshape to (L, T) in order to ensure easier broadcasting within the optimization model.
-
 
     # Validation results
     if train_path is not None:
@@ -138,8 +123,6 @@ def prepare_optimization_data(huc8_df, solar_proportion_df, wind_proportion_df,
             's': s,
             'w': w
         }
-        
-
     else:
         return {
             'L': L, 'T': T,
@@ -150,6 +133,7 @@ def prepare_optimization_data(huc8_df, solar_proportion_df, wind_proportion_df,
             'D': D, 'Y': Y,
             'huc8_order': huc8_order
         }
+
 
 def compute_composite_costs(data, alpha, beta, gamma, normalization='all_std'):
     """
@@ -206,7 +190,6 @@ def compute_composite_costs(data, alpha, beta, gamma, normalization='all_std'):
     else:
         raise Exception(f"Unrecognized normalization {normalization}.")
 
-
     # Avoid division by zero
     norm_S = max(norm_S, 1e-10)
     norm_P = max(norm_P, 1e-10)
@@ -218,6 +201,7 @@ def compute_composite_costs(data, alpha, beta, gamma, normalization='all_std'):
     M_w = alpha * (data['S_w'] / norm_S) + beta * (data['P_w'] / norm_P) + gamma * (data['E_w'] / norm_E)
 
     return M_g, M_s, M_w, norm_S, norm_P, norm_E
+
 
 def optimize_data_center_siting(data, scenario_name, weights_dict, equity_type='max', verbose=True, grid_only=False, normalization='all_std', train_path=None):
     """
@@ -247,6 +231,7 @@ def optimize_data_center_siting(data, scenario_name, weights_dict, equity_type='
         Path to results from a trained optimization model. Applies when we are running a validation case.    
     """
 
+    # set alpha, beta, gamma, delta as parameters (speeds up solving if we do multiple runs with different parameters: https://www.cvxpy.org/tutorial/intro/index.html#parameters)
     alpha = cp.Parameter(nonneg=True)
     beta = cp.Parameter(nonneg=True)
     gamma = cp.Parameter(nonneg=True)

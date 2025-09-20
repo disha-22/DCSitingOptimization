@@ -59,7 +59,7 @@ cost_dict = {'Grid': 'Total Grid Cost [$]',
 
 # if pie charts get too complicated, place it into a class structure.
 # other resources: https://www.geeksforgeeks.org/python/how-to-set-border-for-wedges-in-matplotlib-pie-chart/
-def geoplot_pie(df, lat_col, lon_col, category_dict, unit_factor, unit, pie_scale, ax=None, num_circles=3, size_lon=-125.5, ):
+def geoplot_pie(df, lat_col, lon_col, category_dict, unit_factor, unit, pie_scale, ax=None, num_circles=3, size_lon=-125.5, size_lat=31.6, vspace=1.7):
     """ 
     Plot a map, with pie charts at the centroid of each region. Area of pie chart is proportional to the total amount.
 
@@ -83,7 +83,13 @@ def geoplot_pie(df, lat_col, lon_col, category_dict, unit_factor, unit, pie_scal
             Axes to plot the map and pie chart on.
         num_circles: int
             Number of size circles for the legend.
-
+        size_lon: float
+            Longitude for size legend.
+        size_lat: float
+            Latitude of the lowest size legend.
+        vspace: float
+            Vertical spacing between size legends.
+            
     Returns
     -------
         None
@@ -113,9 +119,9 @@ def geoplot_pie(df, lat_col, lon_col, category_dict, unit_factor, unit, pie_scal
 
     # make the pie size legend
     ref_sizes = np.linspace(0, df[category_dict.values()].sum(axis=1).max(), num_circles+1)[1:] # get num_circles reference sizes
+    biggest = np.sqrt(ref_sizes[-1]) * pie_scale
 
-
-    for size, (lon, lat) in zip(ref_sizes, [(-125.5, 35), (-125.5, 33.3), (-125.5, 31.6)][3-num_circles:]):
+    for size, (lon, lat) in zip(ref_sizes, [(size_lon, 35), (size_lon, 33.3), (size_lon, 31.6)][3-num_circles:]):
     #     ref_label = f'{size * unit_factor:.1f}' + unit
         radius = np.sqrt(size) * pie_scale
 
@@ -133,7 +139,7 @@ def geoplot_pie(df, lat_col, lon_col, category_dict, unit_factor, unit, pie_scal
 
         ax.add_artist(e)
 
-        ax.text(lon+0.9, lat-0.2, f"{size * unit_factor:.0f}" + unit)
+        ax.text(lon+biggest+0.2, lat-0.2, f"{size * unit_factor:.0f}" + unit)
     
     # make the color legend
     for key in category_dict.keys():
