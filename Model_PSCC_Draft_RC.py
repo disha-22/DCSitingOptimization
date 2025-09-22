@@ -231,18 +231,24 @@ def optimize_data_center_siting(data, scenario_name, weights_dict, equity_type='
         Path to results from a trained optimization model. Applies when we are running a validation case.    
     """
 
+    # ==================== Parameters =====================
     # set alpha, beta, gamma, delta as parameters (speeds up solving if we do multiple runs with different parameters: https://www.cvxpy.org/tutorial/intro/index.html#parameters)
     alpha = cp.Parameter(nonneg=True)
     beta = cp.Parameter(nonneg=True)
     gamma = cp.Parameter(nonneg=True)
     delta = cp.Parameter(nonneg=True)
 
+
+    # ==================== Data =======================
+    # L (number of locations) and T (number of time steps) constants
     L, T = data['L'], data['T']
 
     # Compute composite costs
     M_g, M_s, M_w, norm_S, norm_P, norm_E = compute_composite_costs(data, alpha, beta, gamma, normalization=normalization)
 
-    # Decision variables. Keep the vectors as (L, 1) shape rather than (L,) for easy broadcasting.
+
+    # ==================== Decision variables =====================
+    # Keep the vectors as (L, 1) shape rather than (L,) for easy broadcasting.
     x = cp.Variable((L, 1), nonneg=True)  # New DC capacity [MW]
     a = cp.Variable((L, T), nonneg=True)  # DC demand allocation [MWh]
     g = cp.Variable((L, T), nonneg=True)  # Grid power [MWh]
@@ -250,14 +256,7 @@ def optimize_data_center_siting(data, scenario_name, weights_dict, equity_type='
     w = cp.Variable((L, 1), nonneg=True)  # Annual wind [MWh]
 
 
-    train_constraints = []
-
-    if train_path is not None:
-        train_constraints.append(x == data['x'])
-        train_constraints.append(s == data['s'])
-        train_constraints.append(w == data['w'])
-
-
+    # ======================== Water Inequity ========================
     # Compute water scarcity vector S (equation 4)
     S = (cp.diag(data['S_g']) @ cp.sum(g, axis=1, keepdims=True) +
          cp.diag(data['S_s']) @ s +
@@ -269,13 +268,11 @@ def optimize_data_center_siting(data, scenario_name, weights_dict, equity_type='
         f_equity = cp.max(S)
         equity_constraints = []
     elif equity_type == 'mad':  # mean absolute difference of water scarcity footprint
-        # diff = cp.Variable((L, L), nonneg=True)
         f_equity = cp.sum(cp.abs(S - S.T)) / (L * L)
-        # f_equity = cp.sum(diff) / (L * L)
         equity_constraints = []
-        # equity_constraints.append(diff >= cp.abs(S - S.T))
-        # equity_constraints.append(diff >= S - S.T)
-        # equity_constraints.append(diff >= S.T - S)
+
+        # diff = cp.Variable((L, L), nonneg=True)
+        # f_equity = cp.sum(diff) / (L * L)
         # for i in range(L):
         #     for j in range(L):
         #         equity_constraints.append(diff[i, j] >= S[i] - S[j])
@@ -283,18 +280,16 @@ def optimize_data_center_siting(data, scenario_name, weights_dict, equity_type='
     else:
         raise Exception(f"Equity type {equity_type} not recognized.")
 
-    # Objective function (equation 6)
-    obj = ((beta / norm_P) * (data['P_dc'].T @ x) +
-           M_g.T @ cp.sum(g, axis=1) +
-           M_s.T @ s +
-           M_w.T @ w +
-           (alpha / norm_S) * (data['S_dc'].T @ cp.sum(a, axis=1)) +
-           (delta / norm_S) * f_equity)
-
-    # Constraints
+    # LEFT OFF HERE - RICHARD
+    # ======================= Constraints ======================
     constraints = []
 
     # Enforce fixed variables for validation optimization models
+    train_constraints = []
+    if train_path is not None:
+        train_constraints.append(x == data['x'])
+        train_constraints.append(s == data['s'])
+        train_constraints.append(w == data['w'])
     constraints.extend(train_constraints)
 
     # Meet demand (equation 7)
@@ -316,6 +311,15 @@ def optimize_data_center_siting(data, scenario_name, weights_dict, equity_type='
         for l in range(L):
             constraints.append(s[l] == 0)
             constraints.append(w[l] == 0)
+
+
+    # ==================== Objective function (equation 6) ====================
+    obj = ((beta / norm_P) * (data['P_dc'].T @ x) +
+           M_g.T @ cp.sum(g, axis=1) +
+           M_s.T @ s +
+           M_w.T @ w +
+           (alpha / norm_S) * (data['S_dc'].T @ cp.sum(a, axis=1)) +
+           (delta / norm_S) * f_equity)
 
     # Create and solve problem
     problem = cp.Problem(cp.Minimize(obj), constraints)
