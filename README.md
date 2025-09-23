@@ -7,17 +7,17 @@ The following components go into the config file. Config files should be stored 
 
 Within `scenario_name`, the following naming conventions are used.
 
-*region* indicates what region is covered by the optimization. California, United States, only two cities (San Francisco and Los Angeles), etc.
+- *region* indicates what region is covered by the optimization. California, United States, only two cities (San Francisco and Los Angeles), etc.
 
-*demand* indicates the demand profile being used. Options are (1) **flat** for flat 2GWh demand, (2) **business** for business-peaking demand with average demand 2GWh, (3) **caiso** for demand proportional to CAISO demand with average demand 2GWh.
+- *demand* indicates the demand profile being used. Options are (1) **flat** for flat 2GWh demand, (2) **business** for business-peaking demand with average demand 2GWh, (3) **caiso** for demand proportional to CAISO demand with average demand 2GWh.
 
-*renewables* indicates whether the data center developer can only draw on grid electricity, or can tap into renewables. Options are (1) **withRenewables** if renewables are allowed, (2) **gridOnly** if only grid electricity is allowed. For now, we do not experiment with this and fix it to **withRenewables**.
+- *renewables* indicates whether the data center developer can only draw on grid electricity, or can tap into renewables. Options are (1) **withRenewables** if renewables are allowed, (2) **gridOnly** if only grid electricity is allowed. For now, we do not experiment with this and fix it to **withRenewables**.
 
-*equity_type* indicates the evaluation metric for water inequity. Current options are (1) **max** for maximum water scarcity footprint, (2) **mad** for mean absolute difference.
+- *equity_type* indicates the evaluation metric for water inequity. Current options are (1) **max** for maximum water scarcity footprint, (2) **mad** for mean absolute difference.
 
-*normalization* indicates the type of normalization being used. Options are (1) **all_std** to compute normalization factors as the standard deviation across regions for all sources (grid, solar, water, data center), (2) **grid_std** to compute normalization factors as the standard deviation across regions for grid electricity, (3) **max** to compute normalization factors as the maximum across regions for all sources (grid, solar, water, data center).
+- *normalization* indicates the type of normalization being used. Options are (1) **all_std** to compute normalization factors as the standard deviation across regions for all sources (grid, solar, water, data center), (2) **grid_std** to compute normalization factors as the standard deviation across regions for grid electricity, (3) **max** to compute normalization factors as the maximum across regions for all sources (grid, solar, water, data center).
 
-*train_or_valid* indicates whether we are doing a train or validation optimization problem for examining renewables complementarity. Options are (1) **train** for a train optimization instance, (2) **valid** for a validation optimization instance. 
+- *train_or_valid* indicates whether we are doing a train or validation optimization problem for examining renewables complementarity. Options are (1) **train** for a train optimization instance, (2) **valid** for a validation optimization instance. 
 
 `huc8_df`: path to the file with a footprint DataFrame.
 
