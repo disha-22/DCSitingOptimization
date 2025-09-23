@@ -280,7 +280,6 @@ def optimize_data_center_siting(data, scenario_name, weights_dict, equity_type='
     else:
         raise Exception(f"Equity type {equity_type} not recognized.")
 
-    # LEFT OFF HERE - RICHARD
     # ======================= Constraints ======================
     constraints = []
 
@@ -325,6 +324,7 @@ def optimize_data_center_siting(data, scenario_name, weights_dict, equity_type='
     problem = cp.Problem(cp.Minimize(obj), constraints)
 
 
+    # try all different parameter combinations
     for _, params in weights_dict.items():
         weights_name = params['weights_name']
         alpha.value = params['alpha']
@@ -360,7 +360,7 @@ def optimize_data_center_siting(data, scenario_name, weights_dict, equity_type='
         results.update(params)
 
 
-        # add insightful results
+        # add insightful total metrics results
         results_df, total_metrics = analyze_results(results, data)
 
         print(f"Total New Capacity: {total_metrics['Total_New_Capacity_MW']:.1f} MW")
@@ -382,9 +382,10 @@ def optimize_data_center_siting(data, scenario_name, weights_dict, equity_type='
         #     'metrics': metrics
         # }
 
+
+        # save all relevant results
         if not os.path.exists(f"Data/Models/{scenario_name}"):
             os.mkdir(f"Data/Models/{scenario_name}/")
-
 
         with open(f"Data/Models/{scenario_name}/{weights_name}_alpha_{params['alpha']}_beta_{params['beta']}_gamma_{params['gamma']}_delta_{params['delta']}.pkl", "wb") as f:
             pickle.dump({'results': results,
@@ -392,14 +393,25 @@ def optimize_data_center_siting(data, scenario_name, weights_dict, equity_type='
                        'metrics': total_metrics}, f)
 
 
-    # return results
-
 def analyze_results(results, data):
     """
-    Analyze and visualize optimization results
+    Analyze and visualize optimization results.
+
+    Parameters
+    ----------
+        results: dictionary
+            Dictionary of results (x, a, g, s, w).
+        data: dictionary
+            Dictionry of input data for the optimization problem.
+
+    Returns
+    -------
+        results_df: pd.DataFrame
+            DataFrame of location-specific summaries.
+
     """
 
-    # Create results dataframe
+    # ======================================== Create results dataframe ========================================
     results_df = pd.DataFrame({
         'HUC8': data['huc8_order'],
         'New_Capacity_MW': results['x'].flatten(),
@@ -419,7 +431,7 @@ def analyze_results(results, data):
     results_df['Wind_Percent'] = 100 * results_df['Wind_MWh'] / (total_energy + 1e-10)
     results_df['Data_Center_Capacity_Factor'] = results_df['Total_Demand_MWh'].where(results_df['Total_Demand_MWh'] > 1, 0) / (results_df['New_Capacity_MW'] * 8760 + 1e-10)
 
-    # Calculate total metrics
+    # ======================================= Calculate total metrics =======================================
     total_metrics = {
         'Total_New_Capacity_MW': np.sum(results['x']),
         'Total_Grid_MWh': np.sum(results['g']),
@@ -457,7 +469,12 @@ def import_config(config_file):
     Parameters
     ----------
         config_file: string
-            Path to config file
+            Path to config file.
+
+    Returns
+    -------
+        config: dictionary
+            Dictionary with configuration details.
     """
 
     content = configparser.ConfigParser()
@@ -470,8 +487,8 @@ def import_config(config_file):
               'grid_only': content['DEFAULT'].getboolean('grid_only'),
               'equity_type': content['DEFAULT']['equity_type'],
               'weights_file': content['DEFAULT']['weights_file'],
-              'train_path': content['DEFAULT'].get('train_path', None),
-              'normalization': content['DEFAULT']['normalization']}
+              'normalization': content['DEFAULT']['normalization'],
+              'train_path': content['DEFAULT'].get('train_path', None)}
     
     return config
 
@@ -502,7 +519,7 @@ def run_optimization(config_file):
         huc8_df, solar_proportion_df, wind_proportion_df, demand_profile, train_path=config['train_path']
     )
 
-    # ignore weights we've seen before
+    # prepare weights
     weights_df = pd.read_csv(config['weights_file'], index_col=0)
 
     new_weights = []
@@ -518,7 +535,7 @@ def run_optimization(config_file):
 
     weights_dict = new_weights_df.T.to_dict()
 
-    
+    # run the optimization
     optimize_data_center_siting(
         data, 
         scenario_name=config['scenario_name'],
@@ -535,4 +552,4 @@ if __name__ == "__main__":
     print("Data Center Siting Optimization Module Loaded")
     print("Use run_optimization() function to execute the optimization")
     print("\nExample:")
-    print("results = run_optimization(huc8_df, solar_proportion_df, wind_proportion_df, flat_demand_2GWh)")
+    print("results = run_optimization(config_file)")
