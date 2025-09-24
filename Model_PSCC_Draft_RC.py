@@ -446,9 +446,11 @@ def analyze_results(results, data):
                        data['E_s'].T @ results['s'] +
                        data['E_w'].T @ results['w'])[0]
         
-    total_water = (data['S_g'].T @ np.sum(results['g'], axis=1) +
-                   data['S_s'].T @ results['s'] + 
-                   data['S_w'].T @ results['w'])[0]
+    total_water = np.sum(results['S'])
+    # (data['S_g'].T @ np.sum(results['g'], axis=1) +
+    #                data['S_s'].T @ results['s'] + 
+    #                data['S_w'].T @ results['w']
+    #                data['S_dc].T @ results['x'])[0]
         
     total_metrics['Total_Emissions_tonsCO2'] = total_emissions
     total_metrics['Total_Water_Scarcity_m3eq'] = total_water
