@@ -24,13 +24,21 @@ transformer_inv = Transformer.from_crs(4326, 5070)
 huc8_df = gpd.read_file("Data/Footprint/california.geojson")
 
 
-
-color_dict = {
+# dictionaries for bar charts
+color_dict_full = {
     'Grid': 'silver',
     'Solar': 'yellow',
     'Wind': 'deepskyblue',
+    'Curtailed Solar': 'yellow',
+    'Curtailed Wind': 'deepskyblue',
     'Data Center': 'red'
 }
+
+usage_curtail_dict = {'Grid': 'Total_Grid_MWh',
+              'Solar': 'Solar_Used_MWh', 
+              'Wind': 'Wind_Used_MWh',
+              'Curtailed Solar': 'Solar_Curtailed_MWh',
+              'Curtailed Wind': 'Wind_Curtailed_MWh'}
 
 
 # =========================== pie chart dictionaries ============================
@@ -116,7 +124,7 @@ def geoplot_pie(df, lat_col, lon_col, category_dict, unit_factor, unit, pie_scal
             lat = row[lat_col]
 
             ax.pie(row[category_dict.values()], radius=np.sqrt(row[category_dict.values()].sum()) * pie_scale, \
-                center=(lon, lat), colors=[color_dict[key] for key in category_dict.keys()], wedgeprops={
+                center=(lon, lat), colors=[color_dict_full[key] for key in category_dict.keys()], wedgeprops={
                     'edgecolor': 'black',
                     'linewidth': 1
                 })
@@ -147,7 +155,7 @@ def geoplot_pie(df, lat_col, lon_col, category_dict, unit_factor, unit, pie_scal
     
     # make the color legend
     for key in category_dict.keys():
-        ax.bar(0, 0, color=color_dict[key], label=key, zorder=-3)
+        ax.bar(0, 0, color=color_dict_full[key], label=key, zorder=-3)
 
     # ax.set_xlim(L - 3, R)
     # ax.set_ylim(B - 3, T + 0.5)
@@ -346,6 +354,9 @@ def enhance_results(config_path, results_path):
     # avoid large coordinates, which may cause issues with plot size
     results_gdf.to_crs('EPSG:4326', inplace=True)
 
+    # note down the water inequity measure
+    results_gdf.attrs = {'Water Inequity': results['metrics']['Water_Inequity']}
+
     return results_gdf
 
 
@@ -392,8 +403,112 @@ def result_maps(config_path, results_path, axes=None):
     axes[1][1].set_title("Total Electricity Curtailment")
 
     # pie chart of water scarcity footprint
-    geoplot_pie(results_gdf, "centroid_lat", "centroid_lon", water_dict, 1e-6, r"$\times 10^6$ m$^3$-eq", 1e-4, ax=axes[1][2])
+    if (results_gdf[water_dict.values()].sum(axis=1) > 1).sum() < 2: # if only one region experiences any water scarcity footprint.
+        geoplot_pie(results_gdf, "centroid_lat", "centroid_lon", water_dict, 1e-6, r"$\times 10^6$ m$^3$-eq", 1e-4, ax=axes[1][2], size_lon=-126, size_lat=32.6, num_circles=1)
+    else:
+        geoplot_pie(results_gdf, "centroid_lat", "centroid_lon", water_dict, 1e-6, r"$\times 10^6$ m$^3$-eq", 1e-4, ax=axes[1][2], size_lon=-127)
     axes[1][2].set_title("Total Water Scarcity Footprint")
 
 
-# TODO Richard bar chart summaries
+def stack_bar(df_dict, category_dict, unit_factor, x_label, y_label, title, ax=None, color_dict=color_dict_full, attr_list=[], legend_coords=(1, 1.05)):
+    """ 
+    Plots stacked bars to show total accumulated values.
+
+    Parameters
+    ----------
+        df_dict: dictionary of gpd.GeoDataFrame
+            GeoDataFrames with aggregated total data for plotting.
+        category_dict: dictionary
+            Dictionary with sources (grid, solar, wind, data center) as keys, and column names as values.
+        unit_factor: float
+            Multiplier for unit.
+        x_label: string
+            X-axis label.
+        y_label: string
+            Y-axis label.
+        title: string
+            Title of plot.
+        ax: matplotlib.axes.Axes
+            Axes to plot stacked bars on.
+        attr_list: list
+            List of strings, which are attributes from the DataFrames to plot.
+        legend_coords: tuple
+            Coordinates for legend
+
+    Returns
+    -------
+        None
+    """
+
+    if ax is None:
+        ax = plt.gca()
+
+    # plot the bars for total data
+    for idx, scenario_df in enumerate(df_dict.values()):
+        bottom = 0
+
+        for source in category_dict.keys():
+            source_sum = scenario_df[category_dict[source]].sum() # sum over all HUC8 subbasins
+        
+            if 'Curtailed' in source:
+                ax.bar(2*idx, source_sum * unit_factor, color=color_dict_full[source], bottom=bottom, linewidth=1, edgecolor='black', hatch='/')
+            else:
+                ax.bar(2*idx, source_sum * unit_factor, color=color_dict_full[source], bottom=bottom, linewidth=1, edgecolor='black')
+            bottom += source_sum * unit_factor
+
+        # add scatter
+        if len(attr_list) > 0:
+            for attr in attr_list:
+                ax.scatter(2*idx, scenario_df.attrs[attr], color='black', s=30)        
+
+    # labeling
+    ax.set_xlabel(x_label)
+    ax.set_xticks(2*np.arange(len(df_dict.keys())), df_dict.keys()) # set x ticks indicating scenarios
+
+    ax.set_ylabel(y_label)
+    ax.set_title(title)
+
+    # hidden legend elements
+    for source in category_dict.keys():
+        if 'Curtailed' in source:
+            ax.bar(0, 1 * unit_factor, color=color_dict_full[source], label=source, zorder=-3, hatch='/')
+        else:
+            ax.bar(0, 1 * unit_factor, color=color_dict_full[source], label=source, zorder=-3)
+
+    if len(attr_list) > 0:
+        for attr in attr_list:
+            ax.scatter(0, 0, color='black', s=30, label=attr, zorder=-3)
+
+    ax.legend(bbox_to_anchor=legend_coords)
+
+
+def bar_summaries(gdf_dict, axes=None):
+    """ 
+    Plots bar summaries for:
+        -electricity usage
+        -water scarcity footprint
+        -carbon
+        -total cost
+
+    Parameters
+    ----------
+        gdf_dict: dictionary
+            Dictionary of GeoDataFrames for plotting the summary statistics.
+        axes: matplotlib.axes.Axes
+            2x2 axes to plot bar charts on.
+    """
+
+    if axes is None:
+        _, axes = plt.subplots(2, 2, figsize=(18, 8))
+
+    # electricity usage
+    stack_bar(gdf_dict, usage_curtail_dict, 1e-6, '', 'Total Electricity (TWh)', 'Data Center Electricity Usage', ax=axes[0][0])
+
+    # water scarcity footprint
+    stack_bar(gdf_dict, water_dict, 1, '', 'Water Scarcity \n' + r'Footprint (m$^3$-eq)', 'Water Scarcity Footprint', ax=axes[0][1], attr_list=['Water Inequity'], legend_coords=(1,1))
+
+    # carbon footprint
+    stack_bar(gdf_dict, emissions_dict, 1e-6, '', r'Emissions (Mt CO$_2$-eq)', 'Carbon Footprint', ax=axes[1][0])
+
+    # total cost
+    stack_bar(gdf_dict, cost_dict, 1e-9, '', 'Cost ($B)', 'Total Cost', ax=axes[1][1])

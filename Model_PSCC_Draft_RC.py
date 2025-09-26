@@ -364,6 +364,7 @@ def optimize_data_center_siting(config, weights_dict, verbose=True):
         print(f"Water Inequity: {total_metrics['Water_Inequity']:.2f}")
         print(f"Total Emissions: {total_metrics['Total_Emissions_tonsCO2']:.0f} tons CO2")
         print(f"Total Water Scarcity: {total_metrics['Total_Water_Scarcity_m3eq']:.0f} m³-eq")
+        print(f"Total Cost: {total_metrics['Total_Cost_$']:.0f} $")
 
         # log statistics in wandb
         with wandb.init(project='DCSitingOptimization', name=f"{config['scenario_name']}/{weights_name}", config=params) as run:
@@ -437,9 +438,15 @@ def analyze_results(results, data):
     #                data['S_s'].T @ results['s'] + 
     #                data['S_w'].T @ results['w']
     #                data['S_dc].T @ results['x'])[0]
-        
+
+    total_cost = (data['P_g'].T @ np.sum(results['g'], axis=1) +
+                data['P_s'].T @ results['s'] +
+                data['P_w'].T @ results['w'] +
+                data['P_dc'].T @ results['x'])[0]
+
     total_metrics['Total_Emissions_tonsCO2'] = total_emissions
     total_metrics['Total_Water_Scarcity_m3eq'] = total_water
+    total_metrics['Total_Cost_$'] = total_cost
 
     # Renewable percentage
     total_energy_all = total_metrics['Total_Grid_MWh'] + total_metrics['Total_Solar_MWh'] + total_metrics['Total_Wind_MWh']
