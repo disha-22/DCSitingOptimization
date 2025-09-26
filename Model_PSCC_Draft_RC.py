@@ -175,7 +175,7 @@ def compute_composite_costs(data, alpha, beta, gamma, normalization='all_std'):
     return M_g, M_s, M_w, norm_S, norm_P, norm_E
 
 
-def optimize_data_center_siting(config, scenario_name, weights_dict, equity_type='max', verbose=True, grid_only=False, normalization='all_std', train_path=None):
+def optimize_data_center_siting(config, weights_dict, verbose=True):
     """
     Solve the data center siting optimization problem
 
@@ -203,7 +203,6 @@ def optimize_data_center_siting(config, scenario_name, weights_dict, equity_type
         Path to results from a trained optimization model. Applies when we are running a validation case.    
     """
 
-    # TODO Richard fix
     # read data
     huc8_df = gpd.read_file(config['huc8_df'])
     solar_proportion_df = pd.read_csv(config['solar_proportion_df'], index_col=0)
@@ -214,26 +213,24 @@ def optimize_data_center_siting(config, scenario_name, weights_dict, equity_type
             huc8_df, solar_proportion_df, wind_proportion_df, demand_profile
         )
 
+    # ==================== Data and Parameters =======================
+    # L (number of locations) and T (number of time steps) constants
+    L, T = data['L'], data['T']
 
-    # ==================== Parameters =====================
     # set alpha, beta, gamma, delta as parameters (speeds up solving if we do multiple runs with different parameters: https://www.cvxpy.org/tutorial/intro/index.html#parameters)
     alpha = cp.Parameter(nonneg=True)
     beta = cp.Parameter(nonneg=True)
     gamma = cp.Parameter(nonneg=True)
     delta = cp.Parameter(nonneg=True)
 
-    if train_path is not None:
-        train_x = cp.Parameter(nonneg=True)
-        train_s = cp.Parameter(nonneg=True)
-        train_w = cp.Parameter(nonneg=True)
-        
-        
-    # ==================== Data =======================
-    # L (number of locations) and T (number of time steps) constants
-    L, T = data['L'], data['T']
-
     # Compute composite costs
-    M_g, M_s, M_w, norm_S, norm_P, norm_E = compute_composite_costs(data, alpha, beta, gamma, normalization=normalization)
+    M_g, M_s, M_w, norm_S, norm_P, norm_E = compute_composite_costs(data, alpha, beta, gamma, normalization=config['normalization'])
+
+    # set the fixed x, s, w as parameters for validation cases (to provide flexibility over different weight combinations)
+    if config['train_path'] is not None:
+        train_x = cp.Parameter(shape=(L, 1), nonneg=True)
+        train_s = cp.Parameter(shape=(L, 1), nonneg=True)
+        train_w = cp.Parameter(shape=(L, 1), nonneg=True)
 
 
     # ==================== Decision variables =====================
@@ -253,10 +250,10 @@ def optimize_data_center_siting(config, scenario_name, weights_dict, equity_type
          cp.diag(data['S_dc']) @ cp.sum(a, axis=1, keepdims=True))
 
     # Water inequity term
-    if equity_type == 'max': # max water scarcity footprint
+    if config['equity_type'] == 'max': # max water scarcity footprint
         f_equity = cp.max(S)
         equity_constraints = []
-    elif equity_type == 'mad':  # mean absolute difference of water scarcity footprint
+    elif config['equity_type'] == 'mad':  # mean absolute difference of water scarcity footprint
         f_equity = cp.sum(cp.abs(S - S.T)) / (L * L)
         equity_constraints = []
 
@@ -267,7 +264,8 @@ def optimize_data_center_siting(config, scenario_name, weights_dict, equity_type
         #         equity_constraints.append(diff[i, j] >= S[i] - S[j])
         #         equity_constraints.append(diff[i, j] >= S[j] - S[i])
     else:
-        raise Exception(f"Equity type {equity_type} not recognized.")
+        raise Exception(f"Equity type {config['equity_type']} not recognized.")
+
 
     # ======================= Constraints ======================
     constraints = []
@@ -287,13 +285,13 @@ def optimize_data_center_siting(config, scenario_name, weights_dict, equity_type
     constraints.extend(equity_constraints)
 
     # Case with only grid electricity
-    if grid_only:
+    if config['grid_only']:
         for l in range(L):
             constraints.append(s[l] == 0)
             constraints.append(w[l] == 0)
 
     # Enforce fixed variables for validation optimization models
-    if train_path is not None:
+    if config['train_path'] is not None:
         train_constraints = []
         train_constraints.append(x == train_x)
         train_constraints.append(s == train_s)
@@ -322,9 +320,9 @@ def optimize_data_center_siting(config, scenario_name, weights_dict, equity_type
         delta.value = params['delta']
 
         # Validation results
-        if train_path is not None:
+        if config['train_path'] is not None:
             # read in and set parameter values for x, s, w
-            with open(f"Data/Models/{train_path}/{weights_name}_alpha_{params['alpha']}_beta_{params['beta']}_gamma_{params['gamma']}_delta_{params['delta']}.pkl", "rb") as f:
+            with open(f"Data/Models/{config['train_path']}/{weights_name}_alpha_{params['alpha']}_beta_{params['beta']}_gamma_{params['gamma']}_delta_{params['delta']}.pkl", "rb") as f:
                 train_results = pickle.load(f)
 
             train_x.value = train_results['results']['x']
@@ -332,8 +330,8 @@ def optimize_data_center_siting(config, scenario_name, weights_dict, equity_type
             train_w.value = train_results['results']['w']
 
         # update params
-        params['equity_type'] = equity_type
-        params['grid_only'] = grid_only
+        params['equity_type'] = config['equity_type']
+        params['grid_only'] = config['grid_only']
         params['huc8_order'] = data['huc8_order']
 
         problem.solve(solver=cp.GUROBI if 'GUROBI' in cp.installed_solvers() else cp.ECOS, verbose=verbose)
@@ -358,7 +356,6 @@ def optimize_data_center_siting(config, scenario_name, weights_dict, equity_type
         # add in the parameters
         results.update(params)
 
-
         # add insightful total metrics results
         results_df, total_metrics = analyze_results(results, data)
 
@@ -368,25 +365,15 @@ def optimize_data_center_siting(config, scenario_name, weights_dict, equity_type
         print(f"Total Emissions: {total_metrics['Total_Emissions_tonsCO2']:.0f} tons CO2")
         print(f"Total Water Scarcity: {total_metrics['Total_Water_Scarcity_m3eq']:.0f} m³-eq")
 
-
         # log statistics in wandb
-        with wandb.init(project='DCSitingOptimization', name=f"{scenario_name}/{weights_name}", config=params) as run:
+        with wandb.init(project='DCSitingOptimization', name=f"{config['scenario_name']}/{weights_name}", config=params) as run:
             run.log(total_metrics)
 
-
-        # Store results
-        # all_results[scenario['name']] = {
-        #     'results': results,
-        #     'results_df': results_df,
-        #     'metrics': metrics
-        # }
-
-
         # save all relevant results
-        if not os.path.exists(f"Data/Models/{scenario_name}"):
-            os.mkdir(f"Data/Models/{scenario_name}/")
+        if not os.path.exists(f"Data/Models/{config['scenario_name']}"):
+            os.mkdir(f"Data/Models/{config['scenario_name']}/")
 
-        with open(f"Data/Models/{scenario_name}/{weights_name}_alpha_{params['alpha']}_beta_{params['beta']}_gamma_{params['gamma']}_delta_{params['delta']}.pkl", "wb") as f:
+        with open(f"Data/Models/{config['scenario_name']}/{weights_name}_alpha_{params['alpha']}_beta_{params['beta']}_gamma_{params['gamma']}_delta_{params['delta']}.pkl", "wb") as f:
             pickle.dump({'results': results,
                        'results_df': results_df,
                        'metrics': total_metrics}, f)
@@ -528,13 +515,8 @@ def run_optimization(config_file):
     # run the optimization
     optimize_data_center_siting(
         config,
-        scenario_name=config['scenario_name'],
         weights_dict=weights_dict,
-        equity_type=config['equity_type'],
-        verbose=True,
-        grid_only=config['grid_only'],
-        normalization=config['normalization'],
-        train_path=config['train_path']
+        verbose=True
     )
 
 

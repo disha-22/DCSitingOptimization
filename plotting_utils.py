@@ -20,6 +20,10 @@ from Model_PSCC_Draft_RC import *
 transformer = Transformer.from_crs(5070, 4326)
 transformer_inv = Transformer.from_crs(4326, 5070)
 
+# helpful data
+huc8_df = gpd.read_file("Data/Footprint/california.geojson")
+
+
 
 color_dict = {
     'Grid': 'silver',
@@ -121,7 +125,7 @@ def geoplot_pie(df, lat_col, lon_col, category_dict, unit_factor, unit, pie_scal
     ref_sizes = np.linspace(0, df[category_dict.values()].sum(axis=1).max(), num_circles+1)[1:] # get num_circles reference sizes
     biggest = np.sqrt(ref_sizes[-1]) * pie_scale
 
-    for size, (lon, lat) in zip(ref_sizes, [(size_lon, 35), (size_lon, 33.3), (size_lon, 31.6)][3-num_circles:]):
+    for size, (lon, lat) in zip(ref_sizes, [(size_lon, size_lat + 2 * vspace), (size_lon, size_lat + vspace), (size_lon, size_lat)][3-num_circles:]):
     #     ref_label = f'{size * unit_factor:.1f}' + unit
         radius = np.sqrt(size) * pie_scale
 
@@ -155,7 +159,7 @@ def geoplot_pie(df, lat_col, lon_col, category_dict, unit_factor, unit, pie_scal
 
 # functionalize visualization of different statistics
 
-def visualize_stats(df, col, title, cmap, cmap_label, cmap_lims=None, colorNorm=0, ax=None, interest_point_list=[], point_color='red'):
+def visualize_stats(df, col, title, cmap, cmap_label, cmap_lims=None, colorNorm=0, shrink=0.75, ax=None, interest_point_list=[], point_color='red'):
     """ 
     Visualization of selected statistics on HUC8 subbasins.
 
@@ -175,6 +179,8 @@ def visualize_stats(df, col, title, cmap, cmap_label, cmap_lims=None, colorNorm=
             List of two values for color limits
         colorNorm: float
             Value around which to center the coloring
+        shrink: float
+            Factor by which to shrink the color bar
         ax: matplotlib.axes.Axes
             Axis to plot the map on.
         interest_point_list: list
@@ -194,10 +200,10 @@ def visualize_stats(df, col, title, cmap, cmap_label, cmap_lims=None, colorNorm=
         _, ax = plt.subplots()
 
     if cmap_lims is None:
-        _ = df.plot(column=col, edgecolor='black', linewidth=0.5, cmap=cmap, legend=True, legend_kwds={"label": cmap_label}, ax=ax)
+        _ = df.plot(column=col, edgecolor='black', linewidth=0.5, cmap=cmap, legend=True, legend_kwds={"label": cmap_label, "shrink": shrink}, ax=ax)
     else:
         # _ = df.plot(column=col, edgecolor='black', linewidth=0.5, cmap=cmap, vmin=cmap_lims[0], vmax=cmap_lims[1], norm=colors.CenteredNorm(vcenter=colorNorm), legend=True, legend_kwds={"label": cmap_label}, ax=ax)
-        _ = df.plot(column=col, edgecolor='black', linewidth=0.5, cmap=cmap, vmin=cmap_lims[0], vmax=cmap_lims[1], legend=True, legend_kwds={"label": cmap_label}, ax=ax)
+        _ = df.plot(column=col, edgecolor='black', linewidth=0.5, cmap=cmap, vmin=cmap_lims[0], vmax=cmap_lims[1], legend=True, legend_kwds={"label": cmap_label, "shrink": shrink}, ax=ax)
 
     ax.set_title(title)
     ax.set_axis_off()
@@ -221,17 +227,17 @@ def visualize_stats(df, col, title, cmap, cmap_label, cmap_lims=None, colorNorm=
 
 
 
-def curtailed_renewables(data, results):
+def curtailed_renewables(config_path, results_path):
     """ 
     Compute the level of used versus curtailed solar and wind.
 
     Parameters
     ----------
-        data: dictionary
-            Dictionary of input data.
-        results: dictionary
-            Dictionary containing an optimized model results dictionary, results dataframe, and key summary metrics dictionary.
-    
+        config_path: string
+            Path to config file.
+        results_path: string
+            Path to results.
+
     Returns
     -------
         solar_used: np.ndarray
@@ -244,6 +250,24 @@ def curtailed_renewables(data, results):
             Hourly data of how much wind energy was curtailed.
     """
 
+    config = import_config(config_path)
+
+    # read data
+    huc8_df = gpd.read_file(config['huc8_df'])
+    solar_proportion_df = pd.read_csv(config['solar_proportion_df'], index_col=0)
+    wind_proportion_df = pd.read_csv(config['wind_proportion_df'], index_col=0)
+    demand_profile = pd.read_csv(config['demand_profile'], index_col=0)
+
+    data = prepare_optimization_data(
+        huc8_df, solar_proportion_df, wind_proportion_df, demand_profile
+    )
+
+
+    # read results
+    with open(results_path, "rb") as f:
+        results = pickle.load(f)
+    
+
     # calculate hourly renewables
     solar_hourly = np.diag(results['results']['s'].flatten()) @ data['C_s']
     wind_hourly = np.diag(results['results']['w'].flatten()) @ data['C_w']
@@ -253,6 +277,7 @@ def curtailed_renewables(data, results):
     renewables_divide = np.where(total_renewables > 0, total_renewables, 1) # prepare an np.ndarray for division
 
     # derive scaled down version of renewables production - accounts for curtailing
+
     solar_used = np.where(total_renewables >= results['results']['a'], (results['results']['a']/renewables_divide) * solar_hourly, solar_hourly)
     solar_curtailed = solar_hourly - solar_used
     wind_used = np.where(total_renewables >= results['results']['a'], (results['results']['a']/renewables_divide) * wind_hourly, wind_hourly)
@@ -279,26 +304,14 @@ def enhance_results(config_path, results_path):
             GeoDataFrame with summary of optimized results.
     """
 
-    config = import_config(config_path)
-
-    # read data
-    huc8_df = gpd.read_file(config['huc8_df'])
-    solar_proportion_df = pd.read_csv(config['solar_proportion_df'], index_col=0)
-    wind_proportion_df = pd.read_csv(config['wind_proportion_df'], index_col=0)
-    demand_profile = pd.read_csv(config['demand_profile'], index_col=0)
-
-    data = prepare_optimization_data(
-        huc8_df, solar_proportion_df, wind_proportion_df, demand_profile
-    )
-
-    # read results
     with open(results_path, "rb") as f:
         results = pickle.load(f)
 
-    solar_used, solar_curtailed, wind_used, wind_curtailed = curtailed_renewables(data, results)
+    solar_used, solar_curtailed, wind_used, wind_curtailed = curtailed_renewables(config_path, results_path)
 
-    # results dataframe, combined with geometry and footprints
     results_df = results['results_df']
+
+    # add in the geometry and footprints
     results_gdf = huc8_df.merge(results_df, left_on="HUC8", right_on="HUC8")
 
     # renewables: used energy and curtailed energy
@@ -315,17 +328,20 @@ def enhance_results(config_path, results_path):
     results_gdf['Total Solar Water Scarcity Footprint [m^3-eq]'] = results_gdf['Solar_MWh'] * results_gdf['Solar Water Scarcity Footprint [m3-eq/MWh]']
     results_gdf['Total Wind Water Scarcity Footprint [m^3-eq]'] = results_gdf['Wind_MWh'] * results_gdf['Wind Water Scarcity Footprint [m3-eq/MWh]']
     results_gdf['Total Data Center Water Scarcity Footprint [m^3-eq]'] = results_gdf['Total_Demand_MWh'] * results_gdf['Data Center Water Scarcity Footprint [m3-eq/MWh]']
+    results_gdf['Total Water Scarcity Footprint [m3-eq]'] = results_gdf['Total Grid Water Scarcity Footprint [m^3-eq]'] +  results_gdf['Total Solar Water Scarcity Footprint [m^3-eq]'] + results_gdf['Total Wind Water Scarcity Footprint [m^3-eq]'] + results_gdf['Total Data Center Water Scarcity Footprint [m^3-eq]']
 
     # emissions
     results_gdf['Total Grid Emissions [tons CO2-eq]'] = results_gdf['Total_Grid_MWh'] * results_gdf['Grid Carbon Footprint [tons CO2-eq/MWh]']
     results_gdf['Total Solar Emissions [tons CO2-eq]'] = results_gdf['Solar_MWh'] * results_gdf['Solar Carbon Footprint [tons CO2-eq/MWh]']
     results_gdf['Total Wind Emissions [tons CO2-eq]'] = results_gdf['Wind_MWh'] * results_gdf['Wind Carbon Footprint [tons CO2-eq/MWh]']
+    results_gdf['Total Emissions [tons CO2-eq]'] = results_gdf['Total Grid Emissions [tons CO2-eq]'] + results_gdf['Total Solar Emissions [tons CO2-eq]'] + results_gdf['Total Wind Emissions [tons CO2-eq]']
 
     # cost
     results_gdf['Total Grid Cost [$]'] = results_gdf['Total_Grid_MWh'] * results_gdf['Electricity Price [$/MWh]']
     results_gdf['Total Solar Cost [$]'] = results_gdf['Solar_MWh'] * results_gdf['Mean Solar LCOE [$/MWh]']
     results_gdf['Total Wind Cost [$]'] = results_gdf['Wind_MWh'] * results_gdf['Mean Wind LCOE [$/MWh]']
     results_gdf['Total Data Center Cost [$]'] = results_gdf['New_Capacity_MW'] * results_gdf['Data_Center_Cost_Per_MWh']
+    results_gdf['Total Cost [$]'] = results_gdf['Total Grid Cost [$]'] + results_gdf['Total Solar Cost [$]'] + results_gdf['Total Wind Cost [$]'] + results_gdf['Total Data Center Cost [$]']
 
     # avoid large coordinates, which may cause issues with plot size
     results_gdf.to_crs('EPSG:4326', inplace=True)
@@ -336,11 +352,11 @@ def enhance_results(config_path, results_path):
 def result_maps(config_path, results_path, axes=None):
     """ 
     Show maps of the results:
-        - Added data centers, colored map
-        - Capacity factors of data centers, colored map
-        - Pie chart of electricity usage on a map
-        - Pie chart of curtailed electricity on a map
-        - Pie chart of water scarcity footprint on a map
+        - [0][0] Added data centers, colored map
+        - [0][1] Capacity factors of data centers, colored map
+        - [1][0] Pie chart of electricity usage on a map
+        - [1][1] Pie chart of curtailed electricity on a map
+        - [1][2] Pie chart of water scarcity footprint on a map
 
     Parameters
     ----------
@@ -353,16 +369,19 @@ def result_maps(config_path, results_path, axes=None):
     """
 
     if axes is None:
-        axes = plt.subplots(2, 3, figsize=(21, 14))
+        _, axes = plt.subplots(2, 3, figsize=(21, 14))
 
     # plotting data
     results_gdf = enhance_results(config_path, results_path)
 
     # added data centers
-    visualize_stats(results_gdf, 'New_Capacity_MW', 'Added Data Center Capacity', 'Greens', 'MW', ax=axes[0][0])
+    visualize_stats(results_gdf, 'New_Capacity_MW', 'Added Data Center Capacity', cmap='Greens', cmap_label='MW', ax=axes[0][0])
 
     # capacity factor of data centers
-    visualize_stats(results_gdf, 'Data_Center_Capacity_Factor', 'Data Center Capacity Factor', 'Blues', '', [0, 1], ax=axes[0][1]) # unitless. We can also change to percentage if we want.
+    visualize_stats(results_gdf, 'Data_Center_Capacity_Factor', 'Data Center Capacity Factor', cmap='Blues', cmap_label='', cmap_lims=[0, 1], ax=axes[0][1]) # unitless. We can also change to percentage if we want.
+
+    # leave [0][2] blank
+    axes[0][2].set_axis_off()
 
     # pie chart of electricity usage
     geoplot_pie(results_gdf, "centroid_lat", "centroid_lon", usage_dict, 1e-6, " TWh", 2e-4, ax=axes[1][0])
@@ -373,5 +392,8 @@ def result_maps(config_path, results_path, axes=None):
     axes[1][1].set_title("Total Electricity Curtailment")
 
     # pie chart of water scarcity footprint
-    geoplot_pie(results_gdf, "centroid_lat", "centroid_lon", usage_dict, 1e-6, " TWh", 2e-4, ax=axes[1][2])
-    axes[1][2].set_title("Total Data Center Electricity Usage")
+    geoplot_pie(results_gdf, "centroid_lat", "centroid_lon", water_dict, 1e-6, r"$\times 10^6$ m$^3$-eq", 1e-4, ax=axes[1][2])
+    axes[1][2].set_title("Total Water Scarcity Footprint")
+
+
+# TODO Richard bar chart summaries
