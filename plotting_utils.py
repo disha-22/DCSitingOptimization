@@ -451,9 +451,9 @@ def stack_bar(df_dict, category_dict, unit_factor, x_label, y_label, title, ax=N
             source_sum = scenario_df[category_dict[source]].sum() # sum over all HUC8 subbasins
         
             if 'Curtailed' in source:
-                ax.bar(2*idx, source_sum * unit_factor, color=color_dict_full[source], bottom=bottom, linewidth=1, edgecolor='black', hatch='/')
+                ax.bar(2*idx, source_sum * unit_factor, width=1.2, color=color_dict_full[source], bottom=bottom, linewidth=1, edgecolor='black', hatch='/')
             else:
-                ax.bar(2*idx, source_sum * unit_factor, color=color_dict_full[source], bottom=bottom, linewidth=1, edgecolor='black')
+                ax.bar(2*idx, source_sum * unit_factor, width=1.2, color=color_dict_full[source], bottom=bottom, linewidth=1, edgecolor='black')
             bottom += source_sum * unit_factor
 
         # add scatter
