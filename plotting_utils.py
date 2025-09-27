@@ -41,6 +41,61 @@ usage_curtail_dict = {'Grid': 'Total_Grid_MWh',
               'Curtailed Wind': 'Wind_Curtailed_MWh'}
 
 
+
+
+# ========================= Heatmaps ===========================
+
+# Y labels
+solar_proportion_df = pd.read_csv("Data/Solar/solar_proportion_2013_huc8.csv", index_col=0)
+time_index = solar_proportion_df.index
+time_index = time_index.map(lambda x: pd.Timestamp(x))
+heatmap_ylabels = time_index[:24][::6].map(lambda x: x.strftime('%I%p'))
+
+# X labels
+date_list = [time for time in time_index if (time.hour == 0) & (time.day == 1)]
+month_positions = [int(date.strftime('%j'))-1 for date in date_list] # -1 because of zero indexing
+heatmap_xlabels = [date.strftime('%b-%d') for date in date_list]
+
+def yearly_heatmap(hourly_np, title, cmap, cmap_label, ax=None):
+    """ 
+    Plots a 365 * 24 heatmap depicting the time series throughout the year.
+
+    Parameters
+    ----------
+        hourly_np: np.ndarray
+            Numpy array with hourly time series data.
+        title: string
+            Title of graph.
+        cmap: string
+            Color map to use.
+        cmap_label: string
+            Label of color bar
+        ax: matplotlib.axes.Axes
+            Axes to plot heatmap on.
+    """
+
+    if ax is None:
+        ax = plt.gca()
+    
+    fig = ax.get_figure()
+
+    hourly_np_heatmap = hourly_np.reshape(365, 24).T
+
+    im = ax.imshow(hourly_np_heatmap, aspect=4, cmap=cmap)
+
+    cbar = fig.colorbar(im, orientation='horizontal')
+
+    cbar.set_label(cmap_label)
+
+    # set proper xlabel and ylabel
+    ax.set_xticks(month_positions[::3], heatmap_xlabels[::3])
+
+    ax.set_ylabel("Hour (UTC)")
+    ax.set_yticks([0, 6, 12, 18], heatmap_ylabels)
+
+    ax.set_title(title)
+
+
 # =========================== pie chart dictionaries ============================
 # pie chart: size is the total electricity usage. sectors are how much electricity usage comes from grid, solar, wind.
 usage_dict = {'Grid': 'Total_Grid_MWh',
@@ -71,7 +126,7 @@ cost_dict = {'Grid': 'Total Grid Cost [$]',
 
 # if pie charts get too complicated, place it into a class structure.
 # other resources: https://www.geeksforgeeks.org/python/how-to-set-border-for-wedges-in-matplotlib-pie-chart/
-def geoplot_pie(df, lat_col, lon_col, category_dict, unit_factor, unit, pie_scale, ax=None, num_circles=3, size_lon=-125.5, size_lat=31.6, vspace=1.7):
+def geoplot_pie(df, lat_col, lon_col, category_dict, unit_factor, unit, pie_scale, ax=None, num_circles=3, size_lon=-125.5, size_lat=31.6, vspace=1.7, legend=True, legend_fontsize=15):
     """ 
     Plot a map, with pie charts at the centroid of each region. Area of pie chart is proportional to the total amount.
 
@@ -101,6 +156,10 @@ def geoplot_pie(df, lat_col, lon_col, category_dict, unit_factor, unit, pie_scal
             Latitude of the lowest size legend.
         vspace: float
             Vertical spacing between size legends.
+        legend: boolean
+            Whether to have a legend or not.
+        legend_fontsize: integer
+            Font size for legend text.
             
     Returns
     -------
@@ -118,7 +177,7 @@ def geoplot_pie(df, lat_col, lon_col, category_dict, unit_factor, unit, pie_scal
     # plot the pie charts
     for _, row in df.iterrows():
 
-        if row[category_dict.values()].sum() > 0:
+        if row[category_dict.values()].sum() > 1e-5:
             # coordinates, in units of degrees
             lon = row[lon_col]
             lat = row[lat_col]
@@ -159,10 +218,11 @@ def geoplot_pie(df, lat_col, lon_col, category_dict, unit_factor, unit, pie_scal
 
     # ax.set_xlim(L - 3, R)
     # ax.set_ylim(B - 3, T + 0.5)
-    ax.set_xlim(lon - 1, R)
-    ax.set_ylim(lat - 1, T + 0.5)
+    ax.set_xlim(lon - 2.1, R)
+    ax.set_ylim(lat - 2.1, T + 0.5)
 
-    ax.legend(loc='upper right', fontsize=15)
+    if legend:
+        ax.legend(loc='upper right', fontsize=legend_fontsize)
     
 
 # functionalize visualization of different statistics
