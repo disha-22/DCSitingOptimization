@@ -415,7 +415,7 @@ def enhance_results(config_path, results_path):
     results_gdf.to_crs('EPSG:4326', inplace=True)
 
     # note down the water inequity measure
-    results_gdf.attrs = {'Water Inequity': results['metrics']['Water_Inequity']}
+    results_gdf.attrs = {'Maximum Water \nScarcity Footprint': results['metrics']['Water_Inequity']}
 
     return results_gdf
 
@@ -565,7 +565,7 @@ def bar_summaries(gdf_dict, axes=None):
     stack_bar(gdf_dict, usage_curtail_dict, 1e-6, '', 'Total Electricity (TWh)', 'Data Center Electricity Usage', ax=axes[0][0])
 
     # water scarcity footprint
-    stack_bar(gdf_dict, water_dict, 1, '', 'Water Scarcity \n' + r'Footprint (m$^3$-eq)', 'Water Scarcity Footprint', ax=axes[0][1], attr_list=['Water Inequity'], legend_coords=(1,1))
+    stack_bar(gdf_dict, water_dict, 1, '', 'Water Scarcity \n' + r'Footprint (m$^3$-eq)', 'Water Scarcity Footprint', ax=axes[0][1], attr_list=['Maximum Water \nScarcity Footprint'], legend_coords=(1,1))
 
     # carbon footprint
     stack_bar(gdf_dict, emissions_dict, 1e-6, '', r'Emissions (Mt CO$_2$-eq)', 'Carbon Footprint', ax=axes[1][0])
