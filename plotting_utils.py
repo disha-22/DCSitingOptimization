@@ -121,7 +121,9 @@ emissions_dict = {'Grid': 'Total Grid Emissions [tons CO2-eq]',
 cost_dict = {'Grid': 'Total Grid Cost [$]',
              'Solar': 'Total Solar Cost [$]',
              'Wind': 'Total Wind Cost [$]',
-             'Data Center': 'Total Data Center Cost [$]'}
+             'Data Center': 'Total Data Center Cost [$]',
+             'Curtailed Solar': 'N/A',
+             'Curtailed Wind': 'N/A'}
 
 
 # if pie charts get too complicated, place it into a class structure.
@@ -470,7 +472,7 @@ def result_maps(config_path, results_path, axes=None):
     axes[1][2].set_title("Total Water Scarcity Footprint")
 
 
-def stack_bar(df_dict, category_dict, unit_factor, x_label, y_label, title, ax=None, color_dict=color_dict_full, attr_list=[], legend_coords=(1, 1.05)):
+def stack_bar(df_dict, category_dict, unit_factor, x_label, y_label, title, ax=None, attr_list=[], legend_coords=(1, 1.05), legend=True):
     """ 
     Plots stacked bars to show total accumulated values.
 
@@ -494,6 +496,8 @@ def stack_bar(df_dict, category_dict, unit_factor, x_label, y_label, title, ax=N
             List of strings, which are attributes from the DataFrames to plot.
         legend_coords: tuple
             Coordinates for legend
+        legend: bool
+            Whether to have legend or not
 
     Returns
     -------
@@ -508,13 +512,14 @@ def stack_bar(df_dict, category_dict, unit_factor, x_label, y_label, title, ax=N
         bottom = 0
 
         for source in category_dict.keys():
-            source_sum = scenario_df[category_dict[source]].sum() # sum over all HUC8 subbasins
-        
-            if 'Curtailed' in source:
-                ax.bar(2*idx, source_sum * unit_factor, width=1.2, color=color_dict_full[source], bottom=bottom, linewidth=1, edgecolor='black', hatch='/')
-            else:
-                ax.bar(2*idx, source_sum * unit_factor, width=1.2, color=color_dict_full[source], bottom=bottom, linewidth=1, edgecolor='black')
-            bottom += source_sum * unit_factor
+            if category_dict[source] in scenario_df.columns:
+                source_sum = scenario_df[category_dict[source]].sum() # sum over all HUC8 subbasins
+
+                if 'Curtailed' in source:
+                    ax.bar(2*idx, source_sum * unit_factor, width=1.2, color=color_dict_full[source], bottom=bottom, linewidth=1, edgecolor='black', hatch='/')
+                else:
+                    ax.bar(2*idx, source_sum * unit_factor, width=1.2, color=color_dict_full[source], bottom=bottom, linewidth=1, edgecolor='black')
+                bottom += source_sum * unit_factor
 
         # add scatter
         if len(attr_list) > 0:
@@ -529,17 +534,18 @@ def stack_bar(df_dict, category_dict, unit_factor, x_label, y_label, title, ax=N
     ax.set_title(title)
 
     # hidden legend elements
-    for source in category_dict.keys():
-        if 'Curtailed' in source:
-            ax.bar(0, 1 * unit_factor, color=color_dict_full[source], label=source, zorder=-3, hatch='/')
-        else:
-            ax.bar(0, 1 * unit_factor, color=color_dict_full[source], label=source, zorder=-3)
+    if legend:
+        for source in category_dict.keys():
+            if 'Curtailed' in source:
+                ax.bar(0, 1 * unit_factor, color=color_dict_full[source], label=source, zorder=-3, hatch='/')
+            else:
+                ax.bar(0, 1 * unit_factor, color=color_dict_full[source], label=source, zorder=-3)
 
-    if len(attr_list) > 0:
-        for attr in attr_list:
-            ax.scatter(0, 0, color='black', s=30, label=attr, zorder=-3)
+        if len(attr_list) > 0:
+            for attr in attr_list:
+                ax.scatter(0, 0, color='black', s=30, label=attr, zorder=-3)
 
-    ax.legend(bbox_to_anchor=legend_coords)
+        ax.legend(bbox_to_anchor=legend_coords, ncols=len(color_dict_full.keys()))
 
 
 def bar_summaries(gdf_dict, axes=None):
@@ -562,13 +568,13 @@ def bar_summaries(gdf_dict, axes=None):
         _, axes = plt.subplots(2, 2, figsize=(18, 8))
 
     # electricity usage
-    stack_bar(gdf_dict, usage_curtail_dict, 1e-6, '', 'Total Electricity (TWh)', 'Data Center Electricity Usage', ax=axes[0][0])
+    stack_bar(gdf_dict, usage_curtail_dict, 1e-6, '', 'Total Electricity (TWh)', 'Data Center Electricity Usage', ax=axes[0][0], legend=False)
 
     # water scarcity footprint
-    stack_bar(gdf_dict, water_dict, 1, '', 'Water Scarcity \n' + r'Footprint (m$^3$-eq)', 'Water Scarcity Footprint', ax=axes[0][1], attr_list=['Maximum Water \nScarcity Footprint'], legend_coords=(1,1))
+    stack_bar(gdf_dict, water_dict, 1, '', 'Water Scarcity \n' + r'Footprint (m$^3$-eq)', 'Water Scarcity Footprint', ax=axes[0][1], attr_list=['Maximum Water \nScarcity Footprint'], legend_coords=(1,1), legend=False)
 
     # carbon footprint
-    stack_bar(gdf_dict, emissions_dict, 1e-6, '', r'Emissions (Mt CO$_2$-eq)', 'Carbon Footprint', ax=axes[1][0])
+    stack_bar(gdf_dict, emissions_dict, 1e-6, '', r'Emissions (Mt CO$_2$-eq)', 'Carbon Footprint', ax=axes[1][0], legend=False)
 
     # total cost
-    stack_bar(gdf_dict, cost_dict, 1e-9, '', 'Cost ($B)', 'Total Cost', ax=axes[1][1])
+    stack_bar(gdf_dict, cost_dict, 1e-9, '', 'Cost ($B)', 'Total Cost', ax=axes[1][1], legend_coords=(1.1, -0.4))
