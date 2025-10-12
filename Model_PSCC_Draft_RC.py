@@ -16,7 +16,7 @@ import wandb
 import os
 
 def prepare_optimization_data(huc8_df, solar_proportion_df, wind_proportion_df,
-                            demand_profile, data_center_cost=6e5):
+                            demand_profile, data_center_cost=12e6):
     """
     Prepare all data matrices for the optimization problem
 
@@ -31,7 +31,7 @@ def prepare_optimization_data(huc8_df, solar_proportion_df, wind_proportion_df,
         demand_profile: np.ndarray
             Numpy array with time series of total data center demand profile
         data_center_cost: float
-            Cost of data center, in ($/MWh-year)
+            Cost of data center, in ($/MW)
 
     Returns
     -------
@@ -63,7 +63,9 @@ def prepare_optimization_data(huc8_df, solar_proportion_df, wind_proportion_df,
     huc8_order = huc8_df['HUC8'].values
 
     # Prepare cost data
-    P_dc = np.ones(L) * data_center_cost  # Cost of new data center capacity [$/MW]
+    # amortize data center cost to $/MWh
+    data_center_cost_amortized = 12e6/(20 * 8760) # divide by 20 years, and 8760 hours per year
+    P_dc = np.ones(L) * data_center_cost_amortized  # Cost of new data center capacity [$/MW]
     P_g = huc8_df['Electricity Price [$/MWh]'].values  # Grid electricity cost [$/MWh]
     P_s = huc8_df['Mean Solar LCOE [$/MWh]'].values  # Solar LCOE [$/MWh]
     P_w = huc8_df['Mean Wind LCOE [$/MWh]'].values  # Wind LCOE [$/MWh]
@@ -143,7 +145,7 @@ def compute_composite_costs(data, alpha, beta, gamma, normalization='all_std'):
     """
 
     all_S = np.concatenate([data['S_g'], data['S_s'], data['S_w'], data['S_dc']], axis=0)
-    all_P = np.concatenate([data['P_g'], data['P_g'], data['P_w'], data['P_dc']/8760], axis=0) # because data['P_dc'] is in units of $/(MW-year), multiply by (1 year/8760 h) to standardize to units of $/MWh.
+    all_P = np.concatenate([data['P_g'], data['P_g'], data['P_w'], data['P_dc']], axis=0)
     all_E = np.concatenate([data['E_g'], data['E_s'], data['E_w'], np.zeros((data['E_g'].shape[0],))], axis=0) # note that data center emissions are 0 for any location.
 
     # different types of normalization
@@ -300,7 +302,7 @@ def optimize_data_center_siting(config, weights_dict, verbose=True):
 
 
     # ==================== Objective function (equation 6) ====================
-    obj = ((beta / norm_P) * (data['P_dc'].T @ x) +
+    obj = ((beta / norm_P) * (data['P_dc'].T @ x) * T +
            M_g.T @ cp.sum(g, axis=1) +
            M_s.T @ s +
            M_w.T @ w +
