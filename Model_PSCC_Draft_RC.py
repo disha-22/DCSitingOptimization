@@ -64,7 +64,7 @@ def prepare_optimization_data(huc8_df, solar_proportion_df, wind_proportion_df,
 
     # Prepare cost data
     # amortize data center cost to $/MWh
-    data_center_cost_amortized = 12e6/(20 * 8760) # divide by 20 years, and 8760 hours per year
+    data_center_cost_amortized = data_center_cost/(20 * 8760) # divide by 20 years, and 8760 hours per year
     P_dc = np.ones(L) * data_center_cost_amortized  # Cost of new data center capacity [$/MW]
     P_g = huc8_df['Electricity Price [$/MWh]'].values  # Grid electricity cost [$/MWh]
     P_s = huc8_df['Mean Solar LCOE [$/MWh]'].values  # Solar LCOE [$/MWh]
@@ -400,6 +400,8 @@ def analyze_results(results, data):
 
     """
 
+    T = results['g'].shape[1]
+
     # ======================================== Create results dataframe ========================================
     results_df = pd.DataFrame({
         'HUC8': data['huc8_order'],
@@ -444,7 +446,7 @@ def analyze_results(results, data):
     total_cost = (data['P_g'].T @ np.sum(results['g'], axis=1) +
                 data['P_s'].T @ results['s'] +
                 data['P_w'].T @ results['w'] +
-                data['P_dc'].T @ results['x'])[0]
+                data['P_dc'].T @ results['x'] * T)[0]
 
     total_metrics['Total_Emissions_tonsCO2'] = total_emissions
     total_metrics['Total_Water_Scarcity_m3eq'] = total_water
